@@ -1,0 +1,62 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Virtual environment
+.env/
+.venv/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Environment variables and credentials
+.env
+*.env
+openai_key.txt
+hf_token.txt
+
+# macOS
+.DS_Store
+
+# Logs and outputs
+*.log
+*.tmp
+*.temp
+*.bak
+
+# Pycharm
+.idea
+
+# Model checkpoints
+pretrained_models
+
+# Audio/media outputs
+files/temp/
+files/results/
+*.wav
+*.mp3
+*.m4a
+*.flac
+*.aac
+*.ogg
+*.avi
+*.mp4
+*.mov
+*.wmv
+
+# Model caches
+__pycache__/
+*.pth
+*.ckpt
+*.onnx
+*.tflite
+
+# HuggingFace Hub cache
+~/.cache/huggingface/
+huggingface/token*
+token*
