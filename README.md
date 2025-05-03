@@ -153,8 +153,7 @@ sequenceDiagram
 Copy `.env.example` to `.env` and set your API credentials:
 
 ```dotenv
-OPENAI_API_KEY=your_openai_key_here
-PYANNOTE_TOKEN=your_pyannote_token_here
+HF_TOKEN=your_hugging_face_token_here
 ```
 
 You can override defaults by passing CLI flags or editing `config.py`:
@@ -215,8 +214,3 @@ Contributions, issues, and feature requests are welcome! Please fork the repo an
 4. Push to branch (`git push origin feature/YourFeature`)
 5. Open a Pull Request
 
----
-
-## License
-
-This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
