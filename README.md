@@ -119,7 +119,7 @@ sequenceDiagram
 1. **Clone the repository**
 
    ```bash
-   git clone https://github.com/yourusername/audio-pipeline.git
+   git clone https://github.com/AndersonGACFilho/Modular-Audio-Pipeline.git
    cd audio-pipeline
    ```
 
