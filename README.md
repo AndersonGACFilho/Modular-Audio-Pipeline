@@ -1,4 +1,12 @@
 # Audio Processing & Transcription Pipeline
+<p align="center">
+  <img
+    src="https://github.com/user-attachments/assets/777bdf45-01d3-4daa-9ac3-456942b4f8ad"
+    alt="Logo"
+    width="600"
+  />
+</p>
+
 
 A modular Python pipeline for processing audio files—covering media conversion, noise reduction, vocal separation, speech segmentation, automatic transcription with OpenAI Whisper, speaker diarization with Pyannote, and redundancy filtering.
 
