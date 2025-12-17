@@ -3,7 +3,7 @@ import argparse
 import logging
 from dotenv import load_dotenv
 import openai
-from huggingface_hub.hf_api import HfFolder
+from huggingface_hub import login
 
 from audio_pipeline.config import CONFIG
 from audio_pipeline.pipeline import AudioPipeline
@@ -21,7 +21,7 @@ def setup_environment():
     if not hf:
         logger.error("Missing HF_TOKEN")
         raise EnvironmentError("Set HF_TOKEN")
-    HfFolder.save_token(hf)
+    login(token=hf)
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Audio Processing Pipeline")

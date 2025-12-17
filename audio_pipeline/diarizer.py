@@ -1,3 +1,5 @@
+import os
+
 from pyannote.audio import Pipeline
 import torch
 import logging
@@ -11,10 +13,19 @@ class SpeakerDiarizer:
     def __init__(self):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.pipeline = Pipeline.from_pretrained(
-            "pyannote/speaker-diarization-3.1"
+            "pyannote/speaker-diarization-3.1",
+            use_auth_token=os.getenv("HF_TOKEN")
         ).to(device)
 
     def diarize(self, audio_path: str, min_speakers=2, max_speakers=5):
         logger.info("Diarizing %s", audio_path)
         diar = self.pipeline(audio_path, min_speakers=min_speakers, max_speakers=max_speakers)
-        return list(diar.itertracks(yield_label=True))
+
+        # pyannote.audio 3.3+ returns DiarizeOutput which is directly iterable
+        # Each iteration yields (Segment, track_name, speaker_label)
+        if hasattr(diar, 'itertracks'):
+            # Direct Annotation object (older API)
+            return list(diar.itertracks(yield_label=True))
+        else:
+            # DiarizeOutput in newer versions - iterate directly
+            return [(seg, track, speaker) for seg, track, speaker in diar]

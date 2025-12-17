@@ -1,12 +1,6 @@
 # Audio Processing & Transcription Pipeline
-<p align="center">
-  <img
-    src="https://github.com/user-attachments/assets/777bdf45-01d3-4daa-9ac3-456942b4f8ad"
-    alt="Logo"
-    width="600"
-  />
-</p>
 
+![Logo](https://github.com/user-attachments/assets/777bdf45-01d3-4daa-9ac3-456942b4f8ad)
 
 A modular Python pipeline for processing audio files—covering media conversion, noise reduction, vocal separation, speech segmentation, automatic transcription with OpenAI Whisper, speaker diarization with Pyannote, and redundancy filtering.
 
@@ -33,7 +27,7 @@ This project provides a flexible, end-to-end audio processing pipeline to:
 
 1. **Convert & normalize** raw media into uniform WAV format
 2. **Denoise & preprocess** audio (resampling, gain normalization)
-3. **Separate vocals** from background music (Spleeter)
+3. **Separate vocals** from background music (Demucs by default)
 4. **Detect speech** segments (WebRTC VAD)
 5. **Transcribe** speech with OpenAI Whisper
 6. **Diarize** speakers (Pyannote)
@@ -47,7 +41,7 @@ Use the provided CLI entrypoint (`main.py`) for a one-command experience, or imp
 
 * 🔄 **Media Handling:** FFmpeg-based conversion to WAV
 * 🎚️ **Preprocessing:** Noise reduction, resampling, normalization
-* 🎵 **Separation:** Vocal/instrument split via Spleeter
+* 🎵 **Separation:** Vocal/instrument separation (Demucs recommended)
 * 🎙️ **VAD:** WebRTC Voice Activity Detection for accurate speech cuts
 * 🤖 **Transcription:** Whisper ASR with configurable models and language
 * 👥 **Diarization:** Pyannote speaker turn labeling
@@ -71,7 +65,7 @@ AudioPipeline(
 )
 ```
 
-Each module (in the `pipeline/` directory) implements a single responsibility and exposes a clear interface:
+Each module (in the `audio_pipeline/` directory) implements a single responsibility and exposes a clear interface:
 
 1. **MediaHandler** (`media_handler.py`)
 2. **Preprocessor** (`preprocessor.py`)
@@ -80,9 +74,10 @@ Each module (in the `pipeline/` directory) implements a single responsibility an
 5. **Transcriber** (`transcriber.py`)
 6. **Diarizer** (`diarizer.py`)
 7. **RedundancyFilter** (`redundancy.py`)
+
 ### Sequence Diagram
 
-```mermaid
+```
 sequenceDiagram
     participant CLI
     participant Pipeline
@@ -116,9 +111,9 @@ sequenceDiagram
 
 ## Prerequisites
 
-* Python 3.8+
-* ffmpeg installed and in PATH
-* [Spleeter](https://github.com/deezer/spleeter) dependencies
+* Python 3.11+
+* ffmpeg installed and in PATH (Windows users can install via Chocolatey or download from ffmpeg.org)
+* Demucs model files for vocal separation (or other separator backends)
 
 ---
 
@@ -134,15 +129,22 @@ sequenceDiagram
 2. **Create & activate a virtual environment**
 
    ```bash
-   python3 -m venv venv
+   python -m venv venv
+   # Windows
+   venv\Scripts\activate
+   # macOS / Linux
    source venv/bin/activate
    ```
 
 3. **Install Python dependencies**
 
+   The repository includes an updated requirements.txt that may reference a PyTorch wheel index. If you use CUDA-enabled PyTorch, follow the instructions at https://pytorch.org to install the matching torch/torchaudio/torchvision packages, or run:
+
    ```bash
    pip install -r requirements.txt
    ```
+
+   If you encounter PyTorch wheel issues, install PyTorch first using the official selector.
 
 4. **Install FFmpeg**
 
@@ -152,6 +154,9 @@ sequenceDiagram
 
    # Ubuntu/Debian
    sudo apt update && sudo apt install ffmpeg
+
+   # Windows (Chocolatey)
+   choco install ffmpeg
    ```
 
 ---
@@ -164,7 +169,7 @@ Copy `.env.example` to `.env` and set your API credentials:
 HF_TOKEN=your_hugging_face_token_here
 ```
 
-You can override defaults by passing CLI flags or editing `config.py`:
+You can override defaults by passing CLI flags or editing `audio_pipeline/config.py`:
 
 * `DEFAULT_MODEL` (Whisper model: `tiny`, `base`, `small`, `medium`, `large`)
 * `DEFAULT_LANGUAGE` (e.g. `en`, `pt`)
@@ -202,7 +207,7 @@ Output JSON contains timestamped, speaker‐labeled transcripts.
 | ----------------- | ------------------ | ----------------------------------------------- |
 | Media Handler     | `media_handler.py` | Convert to WAV, load audio                      |
 | Preprocessor      | `preprocessor.py`  | Normalize, resample, denoise                    |
-| Separator         | `separator.py`     | Vocal/instrument separation (Spleeter)          |
+| Separator         | `separator.py`     | Vocal/instrument separation (Demucs or CLI)     |
 | VAD               | `vad.py`           | Detect speech segments (WebRTC VAD)             |
 | Transcriber       | `transcriber.py`   | Transcribe with Whisper ASR                     |
 | Diarizer          | `diarizer.py`      | Speaker turn detection (Pyannote)               |
@@ -221,4 +226,3 @@ Contributions, issues, and feature requests are welcome! Please fork the repo an
 3. Commit your changes (`git commit -am 'Add YourFeature'`)
 4. Push to branch (`git push origin feature/YourFeature`)
 5. Open a Pull Request
-
