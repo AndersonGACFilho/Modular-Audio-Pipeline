@@ -1,4 +1,4 @@
-name: VideoTranscripter
+name: AudioPipeline
 channels:
   - conda-forge
   - defaults
@@ -10,7 +10,7 @@ dependencies:
   - ffmpeg
   - pip
 
-  # Conda dependencies (non-PyTorch)
+  # Conda dependencies
   - numpy=1.26.*
   - python-dotenv=1.1.*
 
@@ -22,28 +22,31 @@ dependencies:
       - torchvision==0.20.1+cu118
       - torchaudio==2.5.1+cu118
 
-      # Lightning ecosystem
+      # Lightning ecosystem (optional, for advanced use)
       - lightning>=2.4.0,<2.5.0
       - torchmetrics>=1.6.0,<1.7.0
 
       # Core dependencies
       - typing-extensions>=4.12.2
       - protobuf>=5.29.0
-      - torchcodec>=0.7.0
 
       # Hugging Face
       - huggingface-hub~=0.32.0
-      - huggingface_hub[hf_xet]
 
       # Audio processing
-      - openai~=1.82.0
       - noisereduce~=3.0.3
       - pydub~=0.25.1
-      - jaraco.context~=6.0.0
       - pyloudnorm~=0.1.1
-      # Pinned for torch 2.5.x compatibility
-      - pyannote.audio>=3.1.0,<3.2.0
-      - openai-whisper>=20250625
-      - webrtcvad-wheels~=2.0.14
       - soundfile~=0.13.1
+      - webrtcvad-wheels~=2.0.14
+
+      # Transcription
+      - openai-whisper>=20250625
+      # Optional: faster-whisper for better performance
+      # - faster-whisper>=1.0.0
+
+      # Speaker diarization
+      - pyannote.audio>=3.1.0,<3.2.0
+
+      # Vocal separation
       - demucs>=4.0.0
