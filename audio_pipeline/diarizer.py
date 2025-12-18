@@ -1,7 +1,10 @@
 """
-Speaker Diarizer for the Audio Pipeline.
+audio_pipeline.diarizer
 
-Performs speaker diarization using pyannote.audio to identify who spoke when.
+Speaker diarization utilities for the audio pipeline.
+
+Provides SpeakerDiarizer and NoOpDiarizer implementations that conform to
+DiarizerProtocol. Docstrings use pydoc style to support Sphinx/pydoc.
 """
 
 import os
@@ -12,10 +15,12 @@ import torch
 
 from .protocols import DiarizerProtocol, DiarizationSegment
 from .exceptions import DiarizationError, ModelLoadError
-from .config import PipelineConfig
-from .utils import retry_with_backoff, RetryConfig
+from .config import PipelineConfig, RetryConfig
+from .utils import retry_with_backoff
 
 logger = logging.getLogger(__name__)
+
+__all__ = ["SpeakerDiarizer", "NoOpDiarizer"]
 
 
 class SpeakerDiarizer(DiarizerProtocol):

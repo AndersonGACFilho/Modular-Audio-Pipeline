@@ -40,7 +40,7 @@
     "task": "transcribe",
     "temperature": 0.0,
     "beam_size": 5,
-    "prompt": "Esta gravação é meu chefe me dando instruções sobre tarefas de trabalho."
+    "prompt": "This recording contains a manager providing instructions in Portuguese. Transcribe the audio in Portuguese accurately, preserving punctuation and indicating any pauses or hesitations."
   },
 
   "diarization": {
@@ -69,9 +69,9 @@
 
     "local_model": null,
     "_local_model_options": [
-      "mistralai/Mistral-7B-Instruct-v0.2",
-      "microsoft/Phi-3-mini-4k-instruct",
-      "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+      "Qwen/Qwen2.5-14B-Instruct",
+      "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
+      "meta-llama/Llama-3.2-3B-Instruct"
     ],
 
     "device": "auto",

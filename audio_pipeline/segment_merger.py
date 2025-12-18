@@ -1,3 +1,13 @@
+"""
+audio_pipeline.segment_merger
+
+Utilities for merging adjacent transcription/diarization segments.
+
+Provides SegmentMerger which merges adjacent segments by speaker and
+concatenates text when input segments are dictionaries. Docstrings follow
+pydoc conventions to support Sphinx/pydoc extraction.
+"""
+
 from typing import List, Optional, Union, Any, Dict
 from .protocols import DiarizationSegment
 

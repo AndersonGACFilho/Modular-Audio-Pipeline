@@ -1,7 +1,12 @@
 """
-Audio Preprocessor for the Audio Pipeline.
+audio_pipeline.preprocessor
 
-Handles noise reduction, normalization, and silence removal with timestamp preservation.
+Audio preprocessor utilities for the audio pipeline.
+
+This module implements AudioPreprocessor which performs noise reduction,
+normalization and silence removal while preserving timestamp mappings for
+alignment with original audio. Docstrings follow pydoc conventions so
+Sphinx/pydoc can extract structured documentation.
 """
 
 import os
@@ -23,6 +28,8 @@ from .exceptions import AudioProcessingError
 from .config import PipelineConfig, NoiseReductionConfig
 
 logger = logging.getLogger(__name__)
+
+__all__ = ["AudioPreprocessor"]
 
 
 class AudioPreprocessor(PreprocessorProtocol):

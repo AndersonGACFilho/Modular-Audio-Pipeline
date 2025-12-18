@@ -1,3 +1,14 @@
+"""
+audio_pipeline.post_processing
+
+Post-processing utilities using LLMs for structured meeting analysis.
+
+This module exposes an LLM-based post-processor that uses OpenAI (via
+instructor wrapper) to analyze a meeting transcription and return a
+structured JSON (summary, topics, action items, sentiment). Docstrings
+use pydoc conventions so Sphinx/pydoc can extract API documentation.
+"""
+
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
 import instructor
@@ -10,6 +21,8 @@ import os
 import logging
 
 logger = logging.getLogger(__name__)
+
+__all__ = ["LLMPostProcessor", "ActionItem", "MeetingAnalysis"]
 
 
 # Schema Definition

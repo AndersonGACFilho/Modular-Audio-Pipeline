@@ -1,5 +1,6 @@
-#!/usr/bin/env python3
 """
+audio_pipeline/integrate.py
+
 Automated Integration Script for Audio Pipeline v2.1
 
 This script automatically integrates all fixes and new features:

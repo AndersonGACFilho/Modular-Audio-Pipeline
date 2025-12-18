@@ -182,26 +182,26 @@ class HybridLLMPostProcessor:
         """Build analysis prompt."""
         return f"""You are an expert meeting analyst. Analyze the following transcription and extract key information.
 
-Return your analysis in valid JSON format with these exact keys:
-- "summary": A brief executive summary (2-3 sentences)
-- "topics": A list of main topics discussed
-- "action_items": A list of tasks, each with "description", "owner" (can be null), and "priority" (High/Medium/Low)
-- "sentiment": Overall tone (Positive, Neutral, or Negative)
+                Return your analysis in valid JSON format with these exact keys:
+                - "summary": A brief executive summary (2-3 sentences)
+                - "topics": A list of main topics discussed
+                - "action_items": A list of tasks, each with "description", "owner" (can be null), and "priority" (High/Medium/Low)
+                - "sentiment": Overall tone (Positive, Neutral, or Negative)
 
-Transcription:
-{text}
+                Transcription:
+                {text}
 
-JSON Analysis:"""
-    
+                JSON Analysis:"""
+
     def _extract_json(self, text: str) -> Dict[str, Any]:
         """Extract JSON from LLM response (handles markdown code blocks)."""
         # Try to find JSON in markdown code blocks
-        json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
+        json_match = re.search(r'```(?:json)?\s*({.*?})\s*```', text, re.DOTALL)
         if json_match:
             text = json_match.group(1)
         
         # Try to find raw JSON
-        json_match = re.search(r'\{.*\}', text, re.DOTALL)
+        json_match = re.search(r'{.*}', text, re.DOTALL)
         if json_match:
             text = json_match.group(0)
         
@@ -242,12 +242,12 @@ JSON Analysis:"""
     
     def _process_openai(self, text: str) -> Dict[str, Any]:
         """Process with OpenAI API."""
-        system_message: self.ChatCompletionSystemMessageParam = {
+        system_message = {
             "role": "system",
             "content": "You are an expert meeting analyst. Always respond with valid JSON."
         }
         
-        user_message: self.ChatCompletionUserMessageParam = {
+        user_message = {
             "role": "user",
             "content": self._build_prompt(text)
         }
@@ -255,7 +255,6 @@ JSON Analysis:"""
         response = self.openai_client.chat.completions.create(
             model=self.openai_model,
             messages=[system_message, user_message],
-            response_format={"type": "json_object"},
             temperature=self.temperature
         )
         

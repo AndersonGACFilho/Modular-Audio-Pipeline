@@ -1,7 +1,13 @@
 """
-Media Handler for the Audio Pipeline.
+audio_pipeline.media_handler
 
-Handles media file discovery, validation, and conversion to WAV format.
+Media handler utilities for the audio pipeline.
+
+This module contains the MediaHandler implementation which discovers media
+files, validates them and converts media to mono WAV using FFmpeg.
+
+Public classes and methods are documented using pydoc-style docstrings so
+Sphinx autodoc or pydoc can extract structured documentation.
 """
 
 from __future__ import annotations
@@ -19,6 +25,8 @@ from .utils import validate_file, retry_with_backoff
 from .config import PipelineConfig, RetryConfig
 
 logger = logging.getLogger(__name__)
+
+__all__ = ["MediaHandler"]
 
 
 class MediaHandler(MediaHandlerProtocol):

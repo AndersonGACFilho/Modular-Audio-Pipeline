@@ -1,27 +1,31 @@
 """
-Voice Activity Detection (VAD) for the Audio Pipeline.
+audio_pipeline.vad
 
-Filters audio to keep only voiced segments using WebRTC VAD.
-Preserves timestamp mappings for alignment with original audio.
+Voice Activity Detection implementations used by the audio pipeline.
+
+This module exposes VADFilter implementations (WebRTC and Silero) and a
+NoOpVADFilter for disabling VAD. Docstrings follow pydoc conventions so
+Sphinx/pydoc can extract API documentation.
 """
 
+from typing import List, Tuple
 import os
-import wave
+import logging
 import contextlib
+import wave
 import collections
 from pathlib import Path
-from typing import Tuple, List, Optional
-import logging
-
-import torch
-import torchaudio
-import webrtcvad
 
 from .protocols import VADProtocol, TimestampMapping
 from .exceptions import VADError
 from .config import PipelineConfig, VADConfig
 
+import torchaudio
+import webrtcvad
+
 logger = logging.getLogger(__name__)
+
+__all__ = ["VADFilter", "SileroVADFilter", "NoOpVADFilter"]
 
 
 class VADFilter(VADProtocol):
@@ -197,7 +201,8 @@ class VADFilter(VADProtocol):
 
         # Handle case where speech continues to end
         if triggered:
-            speech_segments.append((segment_start, frames[-1][3] if frames else 0))
+            # frames entries are (frame_bytes, start_time, end_time) => index 2 is end_time
+            speech_segments.append((segment_start, frames[-1][2] if frames else 0))
 
         return speech_segments
 
@@ -267,6 +272,7 @@ class VADFilter(VADProtocol):
 
         # Handle trailing speech
         if triggered and current_segment_frames:
+            # Use end time from last frame tuple
             voiced_segments.append((
                 current_segment_frames,
                 current_segment_start,
@@ -353,12 +359,6 @@ class NoOpVADFilter(VADProtocol):
         return [(0.0, duration)]
 
 
-import torch
-from typing import List, Tuple
-
-
-# ... existing imports...
-
 class SileroVADFilter(VADProtocol):
     """
     DNN-based VAD using Silero (Higher accuracy, robustness to noise).
@@ -379,6 +379,7 @@ class SileroVADFilter(VADProtocol):
         """
         if self.model is None:
             try:
+                import torch
                 # Load from torch hub (caches locally)
                 self.model, self.utils = torch.hub.load(
                     repo_or_dir='snakers4/silero-vad',
@@ -463,6 +464,8 @@ class SileroVADFilter(VADProtocol):
             voiced_audio.append(segment)
             processed_position += segment_duration
 
+        # Concatenate tensors into single waveform
+        import torch
         voiced_audio_tensor = torch.cat(voiced_audio)
 
         out_path = os.path.join(output_dir, f"{Path(input_wav).stem}_voice.wav")
@@ -492,3 +495,4 @@ class SileroVADFilter(VADProtocol):
         )
 
         return out_path, timestamp_mappings
+

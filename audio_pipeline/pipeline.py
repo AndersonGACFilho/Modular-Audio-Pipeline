@@ -1,7 +1,15 @@
 """
-Audio Pipeline Orchestrator - FULLY INTEGRATED VERSION
+audio_pipeline.pipeline
 
-Coordinates all steps of the audio processing and transcription pipeline.
+Orchestrator for the audio processing and transcription pipeline.
+
+This module coordinates all pipeline steps: media discovery/conversion,
+preprocessing (denoise, normalization, silence removal), optional vocal
+separation, VAD, transcription, diarization, redundancy removal and final
+output serialization.
+
+The public API is the AudioPipeline class which accepts components via
+dependency injection for testing and customization.
 """
 
 import os
@@ -9,7 +17,7 @@ import json
 import logging
 from pathlib import Path
 from typing import List, Dict, Optional, Any
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 
 from .protocols import (
     MediaHandlerProtocol,
@@ -19,7 +27,6 @@ from .protocols import (
     TranscriberProtocol,
     DiarizerProtocol,
     RedundancyRemoverProtocol,
-    TranscriptionSegment,
     DiarizationSegment,
     TimestampMapping
 )
@@ -37,10 +44,31 @@ from .utils import CheckpointManager, ensure_directory
 
 logger = logging.getLogger(__name__)
 
+# Optional LLM post-processor (imported lazily).
+# Declared here to satisfy static analysis
+HybridLLMPostProcessor = None
+
 
 @dataclass
 class PipelineResult:
-    """Result of pipeline execution."""
+    """Result returned by AudioPipeline.run().
+
+    Args:
+        success:
+            Whether the pipeline completed successfully.
+        input_file:
+            Path to the input media file processed.
+        output_file:
+            Path to the output transcription JSON file.
+        segments:
+            List of transcription segments with timing and speaker info.
+        error:
+            Optional error message if the pipeline failed.
+        metadata:
+            Additional metadata about the processing run.
+        llm_analysis:
+            Optional LLM analysis results if LLM post-processing was used.
+    """
     success: bool
     input_file: str
     output_file: Optional[str]
@@ -55,8 +83,11 @@ class PipelineResult:
 
 
 class AudioPipeline:
-    """
-    Coordinates all steps of the audio processing and transcription pipeline.
+    """Coordinates the full audio processing pipeline.
+
+    The pipeline composes modular components and supports dependency
+    injection for testing or custom implementations. The main entry point
+    is run(input_file: Optional[str]) -> PipelineResult.
     """
 
     def __init__(
@@ -70,6 +101,18 @@ class AudioPipeline:
         diarizer: Optional[DiarizerProtocol] = None,
         redundancy_remover: Optional[RedundancyRemoverProtocol] = None
     ):
+        """Create AudioPipeline.
+
+        Parameters
+        ----------
+        config:
+            PipelineConfig instance. If None, defaults are used.
+        media_handler, preprocessor, separator, vad, transcriber, diarizer,
+        redundancy_remover:
+            Optional custom components implementing the corresponding
+            protocols. If not provided, default implementations are created
+            based on the configuration.
+        """
         self.config = config or get_default_config()
         self.config.validate()
 
@@ -137,19 +180,17 @@ class AudioPipeline:
         else:
             self.redundancy = NoOpRedundancyRemover()
 
-        # LLM Post-Processor - CORRECTED INITIALIZATION
+        # LLM Post-Processor
         self.llm_processor = None
         if self.config.llm.enabled:
             try:
                 from .post_processing_hybrid import HybridLLMPostProcessor
 
                 self.llm_processor = HybridLLMPostProcessor(
-                    model=self.config.llm.openai_model,  # CORRETO: openai_model
-                    local_model=self.config.llm.local_model,  # CORRETO: local_model
-                    device=self.config.llm.device,  # CORRETO: device
-                    max_length=self.config.llm.max_length,  # CORRETO: max_length
-                    temperature=self.config.llm.temperature,  # CORRETO: temperature
-                    force_local=not self.config.llm.use_openai  # CORRETO: inverte use_openai
+                    device=self.config.llm.device,  # CORRECT: device
+                    max_length=self.config.llm.max_length,  # CORRECT: max_length
+                    temperature=self.config.llm.temperature,  # CORRECT: temperature
+                    force_local=not self.config.llm.use_openai  # CORRECT: invert use_openai
                 )
 
                 # Log backend info
@@ -172,7 +213,21 @@ class AudioPipeline:
         processed_time: float,
         mappings: List[TimestampMapping]
     ) -> float:
-        """Map timestamp from processed audio back to original."""
+        """Map timestamp from processed audio back to original.
+
+        Parameters
+        ----------
+        processed_time:
+            Time in seconds in the processed audio timeline.
+        mappings:
+            List of TimestampMapping objects produced during preprocessing.
+
+        Returns
+        -------
+        float
+            Corresponding time in the original audio timeline if mapping
+            exists; otherwise returns processed_time unchanged.
+        """
         if not mappings:
             return processed_time
 
@@ -191,7 +246,20 @@ class AudioPipeline:
         transcription_segments: List[Dict],
         diarization_segments: List[DiarizationSegment]
     ) -> List[Dict]:
-        """Align transcription segments with speaker labels."""
+        """Align transcription segments with diarization speaker labels.
+
+        Parameters
+        ----------
+        transcription_segments:
+            List of dicts produced by the transcriber with 'start' and 'end'.
+        diarization_segments:
+            List of DiarizationSegment instances returned by the diarizer.
+
+        Returns
+        -------
+        List[Dict]
+            List of aligned segments containing speaker labels.
+        """
         aligned = []
 
         for seg in transcription_segments:
@@ -224,7 +292,21 @@ class AudioPipeline:
         return aligned
 
     def run(self, input_file: Optional[str] = None) -> PipelineResult:
-        """Execute the full audio processing pipeline."""
+        """Execute the full audio processing pipeline.
+
+        Parameters
+        ----------
+        input_file:
+            Optional path to a single media file to process. If None the
+            pipeline will process the first discovered file in the configured
+            media directory.
+
+        Returns
+        -------
+        PipelineResult
+            Result object containing success flag, output path, segments and
+            optional error information.
+        """
         try:
             # Step 1: Find media file
             if input_file:

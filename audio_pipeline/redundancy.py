@@ -1,7 +1,12 @@
 """
+audio_pipeline.redundancy
+
 Redundancy Remover for the Audio Pipeline.
 
 Removes near-duplicate transcription segments based on text similarity.
+
+Public classes and functions are documented using pydoc-style docstrings so
+Sphinx autodoc or pydoc can extract structured documentation.
 """
 
 from difflib import SequenceMatcher
@@ -13,6 +18,8 @@ from .protocols import RedundancyRemoverProtocol
 from .config import PipelineConfig, RedundancyConfig
 
 logger = logging.getLogger(__name__)
+
+__all__ = ["RedundancyRemover", "NoOpRedundancyRemover"]
 
 
 class RedundancyRemover(RedundancyRemoverProtocol):

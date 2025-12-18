@@ -1,4 +1,6 @@
 """
+audio_pipeline.protocols
+
 Protocol definitions for the Audio Pipeline.
 
 Defines interfaces that allow swapping implementations without modifying
@@ -7,7 +9,6 @@ the pipeline orchestrator. Follows Dependency Inversion Principle.
 
 from typing import Protocol, List, Dict, Tuple, Optional, Any, runtime_checkable
 from dataclasses import dataclass
-from pathlib import Path
 
 
 @dataclass

@@ -1,7 +1,12 @@
 """
+audio_pipeline.config
+
 Configuration management for the Audio Pipeline.
 
 Provides typed configuration with validation and environment variable support.
+
+Public dataclasses and functions are documented using pydoc-style docstrings so
+Sphinx autodoc or pydoc can extract structured documentation.
 """
 
 from dataclasses import dataclass, field
@@ -14,6 +19,21 @@ import logging
 from .exceptions import ConfigurationError
 
 logger = logging.getLogger(__name__)
+
+__all__ = [
+    "AudioConfig",
+    "VADConfig",
+    "NoiseReductionConfig",
+    "VocalSeparationConfig",
+    "TranscriptionConfig",
+    "SegmentMergingConfig",
+    "LLMConfig",
+    "DiarizationConfig",
+    "RedundancyConfig",
+    "RetryConfig",
+    "PipelineConfig",
+    "get_default_config",
+]
 
 
 def _filter_comment_keys(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -82,7 +102,7 @@ class TranscriptionConfig:
     task: str = "transcribe"
     temperature: float = 0.0
     beam_size: int = 5
-    prompt: str = ""
+    prompt: Optional[str] = None
     batch_size: int = 16
 
 @dataclass
@@ -283,23 +303,21 @@ class PipelineConfig:
             json.dump(self.to_dict(), f, indent=2, ensure_ascii=False)
 
 
-# Default prompts for different use cases
+# Default prompts for different use cases (all prompts are English-only; keys kept for compatibility)
 DEFAULT_PROMPTS = {
     "pt_instructions": (
-        "Esta gravação é meu chefe me dando instruções sobre tarefas de trabalho. "
-        "Transcreva o áudio em português de forma precisa, mantendo a pontuação correta "
-        "e indicando claramente quaisquer pausas ou hesitações. "
-        "Formate a transcrição em parágrafos para melhor legibilidade."
+        "(Portuguese context) Transcribe this recording in Portuguese. "
+        "The content is a manager providing work instructions. Preserve punctuation, indicate pauses or hesitations, "
+        "and format the transcription into readable paragraphs."
     ),
     "pt_meeting": (
-        "Esta é uma reunião de trabalho em português. "
-        "Transcreva com precisão todas as falas, identificando diferentes interlocutores. "
-        "Mantenha a pontuação correta e indique pausas com reticências."
+        "(Portuguese context) This is a work meeting in Portuguese. "
+        "Transcribe all speech accurately and identify different speakers. "
+        "Keep correct punctuation and indicate pauses where appropriate."
     ),
     "pt_interview": (
-        "Esta é uma entrevista em português. "
-        "Transcreva com precisão as perguntas e respostas. "
-        "Mantenha o tom e estilo de fala original."
+        "(Portuguese context) This is an interview in Portuguese. "
+        "Transcribe questions and answers accurately, preserving tone and speaking style."
     ),
     "en_general": (
         "Transcribe this audio accurately in English. "
@@ -307,15 +325,19 @@ DEFAULT_PROMPTS = {
         "Format the transcription in paragraphs for readability."
     ),
     "en_technical": (
-        "This is a technical discussion. "
+        "This is a technical discussion in English. "
         "Transcribe accurately, paying attention to technical terms and acronyms. "
         "Maintain proper punctuation."
     ),
 }
 
-
 def get_default_config() -> PipelineConfig:
-    """Get default pipeline configuration."""
+    """
+    Get default pipeline configuration.
+    """
     config = PipelineConfig()
-    config.transcription.prompt = DEFAULT_PROMPTS["pt_instructions"]
+
+    # Use an English instructional prompt by default
+    config.transcription.prompt = DEFAULT_PROMPTS["en_general"]
+
     return config
