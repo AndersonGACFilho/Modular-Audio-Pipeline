@@ -1,8 +1,7 @@
 """
-Audio Pipeline Orchestrator.
+Audio Pipeline Orchestrator - FULLY INTEGRATED VERSION
 
 Coordinates all steps of the audio processing and transcription pipeline.
-Supports dependency injection, checkpoint/resume, and timestamp preservation.
 """
 
 import os
@@ -27,8 +26,8 @@ from .protocols import (
 from .media_handler import MediaHandler
 from .preprocessor import AudioPreprocessor
 from .separator import VocalSeparator, NoOpVocalSeparator
-from .vad import VADFilter, NoOpVADFilter
-from .transcriber import WhisperTranscriber
+from .vad import VADFilter, SileroVADFilter, NoOpVADFilter
+from .transcriber import WhisperTranscriber, FasterWhisperTranscriber
 from .diarizer import SpeakerDiarizer, NoOpDiarizer
 from .redundancy import RedundancyRemover, NoOpRedundancyRemover
 from .config import PipelineConfig, get_default_config
@@ -47,7 +46,8 @@ class PipelineResult:
     segments: List[Dict[str, Any]]
     error: Optional[str] = None
     metadata: Dict[str, Any] = None
-    
+    llm_analysis: Optional[Dict[str, Any]] = None
+
     def __post_init__(self):
         if self.metadata is None:
             self.metadata = {}
@@ -56,14 +56,8 @@ class PipelineResult:
 class AudioPipeline:
     """
     Coordinates all steps of the audio processing and transcription pipeline.
-    
-    Features:
-    - Dependency injection for all components
-    - Checkpoint/resume support for long files
-    - Timestamp preservation for mapping back to original
-    - Configurable pipeline steps
     """
-    
+
     def __init__(
         self,
         config: Optional[PipelineConfig] = None,
@@ -75,204 +69,213 @@ class AudioPipeline:
         diarizer: Optional[DiarizerProtocol] = None,
         redundancy_remover: Optional[RedundancyRemoverProtocol] = None
     ):
-        """
-        Initialize AudioPipeline.
-        
-        Args:
-            config: Pipeline configuration (uses defaults if None)
-            media_handler: Media file handler (created from config if None)
-            preprocessor: Audio preprocessor (created from config if None)
-            separator: Vocal separator (created from config if None)
-            vad: Voice activity detector (created from config if None)
-            transcriber: Speech transcriber (created from config if None)
-            diarizer: Speaker diarizer (created from config if None)
-            redundancy_remover: Redundancy filter (created from config if None)
-        """
         self.config = config or get_default_config()
         self.config.validate()
-        
+
         # Setup directories
         self.media_dir = ensure_directory(self.config.media_dir)
         self.temp_dir = ensure_directory(self.config.temp_dir)
         self.results_dir = ensure_directory(self.config.results_dir)
-        
+
         # Setup checkpoint manager
         self.checkpoint_manager = None
         if self.config.checkpoint_enabled:
             self.checkpoint_manager = CheckpointManager(self.temp_dir)
-        
-        # Initialize components (dependency injection or create from config)
+
+        # Initialize components
         self.media = media_handler or MediaHandler.from_config(self.config)
         self.preprocessor = preprocessor or AudioPreprocessor.from_config(self.config)
-        
-        # Separator - use NoOp if disabled
+
+        # Separator
         if separator:
             self.separator = separator
         elif self.config.vocal_separation.enabled:
             self.separator = VocalSeparator.from_config(self.config, self.checkpoint_manager)
         else:
             self.separator = NoOpVocalSeparator()
-        
-        # VAD - use NoOp if disabled
+
+        # VAD
         if vad:
             self.vad = vad
         elif self.config.vad.enabled:
-            self.vad = VADFilter.from_config(self.config)
+            if self.config.vad.provider == "silero":
+                logger.info("Using Silero VAD (optimized)")
+                self.vad = SileroVADFilter(
+                    threshold=self.config.vad.threshold,
+                    sampling_rate=self.config.audio.sample_rate
+                )
+            else:
+                logger.info("Using WebRTC VAD (legacy)")
+                self.vad = VADFilter.from_config(self.config)
         else:
             self.vad = NoOpVADFilter()
-        
+
         # Transcriber
-        self.transcriber = transcriber or WhisperTranscriber.from_config(self.config)
-        
-        # Diarizer - use NoOp if disabled
+        if transcriber:
+            self.transcriber = transcriber
+        elif self.config.transcription.backend == "faster-whisper":
+            logger.info("Using FasterWhisper (optimized)")
+            self.transcriber = FasterWhisperTranscriber.from_config(self.config)
+        else:
+            logger.info("Using standard Whisper")
+            self.transcriber = WhisperTranscriber.from_config(self.config)
+
+        # Diarizer
         if diarizer:
             self.diarizer = diarizer
         elif self.config.diarization.enabled:
             self.diarizer = SpeakerDiarizer.from_config(self.config)
         else:
             self.diarizer = NoOpDiarizer()
-        
-        # Redundancy remover - use NoOp if disabled
+
+        # Redundancy remover
         if redundancy_remover:
             self.redundancy = redundancy_remover
         elif self.config.redundancy.enabled:
             self.redundancy = RedundancyRemover.from_config(self.config)
         else:
             self.redundancy = NoOpRedundancyRemover()
-        
-        # Timestamp mappings for tracing back to original
+
+        # LLM Post-Processor - CORRECTED INITIALIZATION
+        self.llm_processor = None
+        if self.config.llm.enabled:
+            try:
+                from .post_processing_hybrid import HybridLLMPostProcessor
+
+                self.llm_processor = HybridLLMPostProcessor(
+                    model=self.config.llm.openai_model,  # CORRETO: openai_model
+                    local_model=self.config.llm.local_model,  # CORRETO: local_model
+                    device=self.config.llm.device,  # CORRETO: device
+                    max_length=self.config.llm.max_length,  # CORRETO: max_length
+                    temperature=self.config.llm.temperature,  # CORRETO: temperature
+                    force_local=not self.config.llm.use_openai  # CORRETO: inverte use_openai
+                )
+
+                # Log backend info
+                info = self.llm_processor.get_backend_info()
+                logger.info(f"✓ LLM initialized: {info['backend']} ({info['model']})")
+
+            except ImportError as e:
+                logger.warning(f"LLM post-processing disabled: {e}")
+                logger.warning("Install with: pip install transformers torch openai instructor")
+                self.llm_processor = None
+            except Exception as e:
+                logger.error(f"Failed to initialize LLM: {e}")
+                self.llm_processor = None
+
+        # Timestamp mappings
         self._timestamp_mappings: List[TimestampMapping] = []
-    
+
     def _map_timestamp_to_original(
         self,
         processed_time: float,
         mappings: List[TimestampMapping]
     ) -> float:
-        """
-        Map a timestamp from processed audio back to original audio.
-        
-        Args:
-            processed_time: Time in processed audio
-            mappings: List of timestamp mappings
-            
-        Returns:
-            Corresponding time in original audio
-        """
+        """Map timestamp from processed audio back to original."""
         if not mappings:
             return processed_time
-        
+
         for mapping in mappings:
             if mapping.processed_start <= processed_time <= mapping.processed_end:
-                # Linear interpolation within segment
                 ratio = (processed_time - mapping.processed_start) / \
                         (mapping.processed_end - mapping.processed_start + 1e-10)
                 original_time = mapping.original_start + \
                                ratio * (mapping.original_end - mapping.original_start)
                 return original_time
-        
-        # If not found in mappings, return as-is
+
         return processed_time
-    
+
     def _align_transcription_with_speakers(
         self,
         transcription_segments: List[Dict],
         diarization_segments: List[DiarizationSegment]
     ) -> List[Dict]:
-        """
-        Align transcription segments with speaker labels from diarization.
-        
-        Uses overlap duration to assign the most likely speaker to each segment.
-        """
+        """Align transcription segments with speaker labels."""
         aligned = []
-        
+
         for seg in transcription_segments:
             start = seg["start"]
             end = seg["end"]
             text = seg.get("text", "").strip()
-            
+
             if not text:
                 continue
-            
-            # Find overlapping diarization segments
+
             speaker = "Unknown"
             max_overlap = 0
-            
+
             for diar_seg in diarization_segments:
-                # Calculate overlap
                 overlap_start = max(start, diar_seg.start)
                 overlap_end = min(end, diar_seg.end)
                 overlap_duration = max(0, overlap_end - overlap_start)
-                
+
                 if overlap_duration > max_overlap:
                     max_overlap = overlap_duration
                     speaker = diar_seg.speaker
-            
+
             aligned.append({
                 "speaker": speaker,
                 "start": start,
                 "end": end,
                 "text": text
             })
-        
+
         return aligned
-    
+
     def run(self, input_file: Optional[str] = None) -> PipelineResult:
-        """
-        Execute the full audio processing pipeline.
-        
-        Args:
-            input_file: Specific file to process (or None to auto-discover)
-            
-        Returns:
-            PipelineResult with success status, output file, and segments
-        """
+        """Execute the full audio processing pipeline."""
         try:
             # Step 1: Find media file
             if input_file:
                 media_file, is_video = self.media.find_specific_file(input_file)
             else:
                 media_file, is_video = self.media.find_media_file()
-            
+
             base = Path(media_file).stem
             logger.info(f"Processing: {media_file}")
-            
-            # Step 2: Convert to WAV if needed
+
+            # Step 2: Convert to WAV
             ext = Path(media_file).suffix.lower()
             if is_video or ext != '.wav':
                 wav = self.media.convert_to_wav(media_file)
             else:
                 wav = media_file
-            
+
             # Step 3: Preprocess
             all_mappings: List[TimestampMapping] = []
-            
+
             # Noise reduction
             if self.config.noise_reduction.enabled:
+                logger.info("Reducing noise...")
                 denoised = self.preprocessor.reduce_stationary_noise(wav)
             else:
                 denoised = wav
-            
-            # Vocal separation (auto-detects if needed when enabled)
+
+            # Vocal separation
             if self.config.vocal_separation.enabled or self.config.vocal_separation.auto_detect:
+                logger.info("Checking if vocal separation needed...")
                 vocals = self.separator.extract_vocals(denoised)
             else:
                 vocals = denoised
-            
+
             # Normalization
+            logger.info("Normalizing audio...")
             norm = self.preprocessor.normalize_audio(vocals)
             loudnorm = self.preprocessor.normalize_loudness(norm)
-            
-            # Silence removal (with timestamp preservation)
+
+            # Silence removal
             if self.config.preserve_timestamps:
+                logger.info("Removing silence (preserving timestamps)...")
                 silence_removed, silence_mappings = self.preprocessor.remove_silence(
                     loudnorm, preserve_timestamps=True
                 )
                 all_mappings.extend(silence_mappings)
             else:
                 silence_removed, _ = self.preprocessor.remove_silence(loudnorm)
-            
-            # Step 4: VAD (with timestamp preservation)
+
+            # Step 4: VAD
             if self.config.vad.enabled:
+                logger.info(f"Applying VAD ({self.config.vad.provider})...")
                 voiced_wav, vad_mappings = self.vad.filter_voice(
                     silence_removed, self.results_dir
                 )
@@ -280,13 +283,16 @@ class AudioPipeline:
                     all_mappings.extend(vad_mappings)
             else:
                 voiced_wav = silence_removed
-            
+
             # Step 5: Transcribe
+            logger.info(f"Transcribing ({self.config.transcription.backend})...")
             transcription_result = self.transcriber.transcribe(voiced_wav)
             raw_segments = transcription_result.get("segments", [])
-            
+            logger.info(f"✓ Transcribed {len(raw_segments)} segments")
+
             # Step 6: Diarize
             if self.config.diarization.enabled:
+                logger.info("Diarizing speakers...")
                 diarization_segments = self.diarizer.diarize(
                     voiced_wav,
                     min_speakers=self.config.diarization.min_speakers,
@@ -294,14 +300,16 @@ class AudioPipeline:
                 )
             else:
                 diarization_segments = []
-            
-            # Step 7: Align transcription with speakers
+
+            # Step 7: Align
+            logger.info("Aligning transcription with speakers...")
             aligned_segments = self._align_transcription_with_speakers(
                 raw_segments, diarization_segments
             )
-            
-            # Step 8: Map timestamps back to original (if enabled)
+
+            # Step 8: Map timestamps
             if self.config.preserve_timestamps and all_mappings:
+                logger.info("Mapping timestamps to original audio...")
                 for seg in aligned_segments:
                     seg["original_start"] = self._map_timestamp_to_original(
                         seg["start"], all_mappings
@@ -309,36 +317,69 @@ class AudioPipeline:
                     seg["original_end"] = self._map_timestamp_to_original(
                         seg["end"], all_mappings
                     )
-            
+
             # Step 9: Remove redundancies
+            logger.info("Removing redundant segments...")
             final_segments = self.redundancy.remove(aligned_segments)
-            
-            # Step 10: Save results
+            logger.info(f"✓ Final: {len(final_segments)} segments")
+
+            # Step 10: LLM Post-Processing
+            llm_analysis = None
+            if self.llm_processor:
+                try:
+                    logger.info("Analyzing with LLM...")
+                    full_text = " ".join([s["text"] for s in final_segments])
+                    llm_analysis = self.llm_processor.process(full_text)
+
+                    if "error" not in llm_analysis:
+                        logger.info("✓ LLM analysis complete")
+                        logger.info(f"  Summary: {llm_analysis['summary'][:80]}...")
+                        logger.info(f"  Topics: {len(llm_analysis['topics'])}")
+                        logger.info(f"  Actions: {len(llm_analysis['action_items'])}")
+                    else:
+                        logger.warning(f"LLM analysis failed: {llm_analysis['error']}")
+
+                except Exception as e:
+                    logger.warning(f"LLM processing failed: {e}")
+                    llm_analysis = {"error": str(e)}
+
+            # Step 11: Save results
             output_data = {
                 "metadata": {
                     "source_file": str(media_file),
                     "config": {
                         "model": self.config.transcription.model,
                         "language": self.config.transcription.language,
+                        "vad_provider": self.config.vad.provider,
+                        "transcription_backend": self.config.transcription.backend,
                     }
                 },
                 "segments": final_segments
             }
-            
+
+            if llm_analysis and "error" not in llm_analysis:
+                output_data["llm_analysis"] = llm_analysis
+
             out_path = os.path.join(self.results_dir, f"{base}_transcription.json")
             with open(out_path, "w", encoding="utf-8") as f:
                 json.dump(output_data, f, ensure_ascii=False, indent=2)
-            
-            logger.info(f"Saved transcription: {out_path}")
-            
+
+            logger.info(f"✓ Saved transcription: {out_path}")
+
             return PipelineResult(
                 success=True,
                 input_file=str(media_file),
                 output_file=out_path,
                 segments=final_segments,
-                metadata={"model": self.config.transcription.model}
+                llm_analysis=llm_analysis,
+                metadata={
+                    "model": self.config.transcription.model,
+                    "backend": self.config.transcription.backend,
+                    "vad": self.config.vad.provider,
+                    "llm_enabled": self.config.llm.enabled
+                }
             )
-            
+
         except MediaNotFoundError as e:
             logger.error(f"Media not found: {e}")
             return PipelineResult(
@@ -348,7 +389,7 @@ class AudioPipeline:
                 segments=[],
                 error=str(e)
             )
-            
+
         except AudioPipelineError as e:
             logger.error(f"Pipeline error: {e}")
             return PipelineResult(
@@ -358,7 +399,7 @@ class AudioPipeline:
                 segments=[],
                 error=str(e)
             )
-            
+
         except Exception as e:
             logger.exception(f"Unexpected error: {e}")
             return PipelineResult(
@@ -368,17 +409,13 @@ class AudioPipeline:
                 segments=[],
                 error=f"Unexpected error: {e}"
             )
-    
+
     def run_transcription_only(self, input_wav: str) -> PipelineResult:
-        """
-        Run transcription only on a pre-processed WAV file.
-        
-        Useful for testing or when preprocessing was done separately.
-        """
+        """Run transcription only on a pre-processed WAV file."""
         try:
             result = self.transcriber.transcribe(input_wav)
             segments = result.get("segments", [])
-            
+
             return PipelineResult(
                 success=True,
                 input_file=input_wav,
@@ -393,22 +430,24 @@ class AudioPipeline:
                 segments=[],
                 error=str(e)
             )
-    
+
     def cleanup(self) -> None:
         """Cleanup temporary files and unload models."""
         import shutil
-        
-        # Unload models to free memory
+
+        logger.info("Cleaning up...")
+
+        # Unload models
         if hasattr(self.transcriber, 'unload_model'):
             self.transcriber.unload_model()
         if hasattr(self.diarizer, 'unload_model'):
             self.diarizer.unload_model()
-        
+
         # Clear checkpoint cache
         if self.checkpoint_manager:
             self.checkpoint_manager.clear()
-        
+
         # Remove temp directory
         if os.path.exists(self.temp_dir):
             shutil.rmtree(self.temp_dir)
-            logger.info(f"Cleaned up temp directory: {self.temp_dir}")
+            logger.info(f"✓ Cleaned up temp directory: {self.temp_dir}")

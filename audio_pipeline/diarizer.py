@@ -12,7 +12,7 @@ import torch
 
 from .protocols import DiarizerProtocol, DiarizationSegment
 from .exceptions import DiarizationError, ModelLoadError
-from .config import PipelineConfig, DiarizationConfig
+from .config import PipelineConfig
 from .utils import retry_with_backoff, RetryConfig
 
 logger = logging.getLogger(__name__)
@@ -55,7 +55,9 @@ class SpeakerDiarizer(DiarizerProtocol):
         
         self._pipeline = None
         self._lazy_load = lazy_load
-        
+        # If loading fails due to incompatible runtime (e.g., NumPy 2.0), fall back to NoOp
+        self._use_noop = False
+
         logger.info(f"Diarizer initialized (device: {self.device}, lazy_load: {lazy_load})")
         
         if not lazy_load:
@@ -98,6 +100,12 @@ class SpeakerDiarizer(DiarizerProtocol):
                 self.model_name,
                 use_auth_token=self.hf_token
             ).to(self.device)
+
+            if hasattr(self._pipeline, "segmentation_batch_size"):
+                self._pipeline.segmentation_batch_size = 32
+
+            if hasattr(self._pipeline, "embedding_batch_size"):
+                self._pipeline.embedding_batch_size = 32
             
             logger.info(f"Diarization pipeline loaded on {self.device}")
             
@@ -107,11 +115,36 @@ class SpeakerDiarizer(DiarizerProtocol):
                 details="Install with: pip install pyannote.audio"
             )
         except Exception as e:
-            raise ModelLoadError(
-                f"Failed to load diarization model: {self.model_name}",
-                details=str(e)
-            )
-    
+            msg = str(e)
+            # Common failure on Windows with NumPy 2.0 where pyannote references np.NaN
+            if 'np.NaN' in msg or 'NumPy 2.0' in msg or 'np.nan' in msg and 'was removed' in msg:
+                logger.warning(
+                    "Diarization loading failed due to NumPy compatibility issue: %s. "
+                    "Attempting to monkeypatch numpy.NaN and retry once.", msg
+                )
+                try:
+                    import numpy as np
+                    # Provide backwards-compatible alias if missing
+                    if not hasattr(np, 'NaN'):
+                        setattr(np, 'NaN', np.nan)
+
+                    from pyannote.audio import Pipeline
+                    self._pipeline = Pipeline.from_pretrained(
+                        self.model_name,
+                        use_auth_token=self.hf_token
+                    ).to(self.device)
+                    logger.info("Diarization pipeline loaded after numpy monkeypatch")
+                    return
+                except Exception as e2:
+                    logger.warning(f"Retry after numpy monkeypatch failed: {e2}")
+
+            # If we reach here, cannot load pyannote - fall back to NoOp diarizer at runtime
+            logger.error(f"Failed to load diarization model: {self.model_name}\nDetails: {msg}")
+            logger.warning("Falling back to NoOp diarizer (single-speaker) so pipeline can continue.")
+            self._use_noop = True
+            self._pipeline = None
+
+
     def unload_model(self) -> None:
         """Unload the model to free memory."""
         if self._pipeline is not None:
@@ -147,6 +180,11 @@ class SpeakerDiarizer(DiarizerProtocol):
         Raises:
             DiarizationError: If diarization fails
         """
+        # If we previously determined we must use NoOp, delegate to NoOpDiarizer
+        if getattr(self, '_use_noop', False):
+            logger.warning("Using NoOpDiarizer fallback for diarization")
+            return NoOpDiarizer().diarize(audio_path, min_speakers, max_speakers)
+
         if self._pipeline is None:
             self.load_model()
         

@@ -16,6 +16,19 @@ from .exceptions import ConfigurationError
 logger = logging.getLogger(__name__)
 
 
+def _filter_comment_keys(data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Filter out keys starting with '_' which are used as comments in JSON.
+
+    Args:
+        data: Dictionary potentially containing comment keys
+
+    Returns:
+        Dictionary with comment keys removed
+    """
+    return {k: v for k, v in data.items() if not k.startswith('_')}
+
+
 @dataclass
 class AudioConfig:
     """Audio processing configuration."""
@@ -27,15 +40,20 @@ class AudioConfig:
 @dataclass
 class VADConfig:
     """Voice Activity Detection configuration."""
-    mode: int = 1  # 0-3, higher = more aggressive
+    enabled: bool = True
+    provider: str = "silero"  # "webrtc" or "silero"
+    # Silero specific
+    threshold: float = 0.5
+    min_speech_duration_ms: int = 250
+    # WebRTC specific (legacy)
+    mode: int = 1
     frame_duration_ms: int = 30
     padding_duration_ms: int = 500
     start_threshold: float = 0.5
     stop_threshold: float = 0.9
-    enabled: bool = True
 
 
-@dataclass  
+@dataclass
 class NoiseReductionConfig:
     """Noise reduction configuration."""
     enabled: bool = True
@@ -56,13 +74,28 @@ class VocalSeparationConfig:
 @dataclass
 class TranscriptionConfig:
     """Transcription configuration."""
+    backend: str = "faster-whisper"  # "openai" or "faster-whisper"
     model: str = "large-v3"
+    device: str = "cuda"
+    compute_type: str = "float16"  # For faster-whisper (float16, int8)
     language: str = "pt"
     task: str = "transcribe"
     temperature: float = 0.0
     beam_size: int = 5
     prompt: str = ""
-    response_format: str = "verbose_json"
+    batch_size: int = 16
+
+
+@dataclass
+class LLMConfig:
+    """LLM Post-Processing Configuration (Hybrid: OpenAI + Local)."""
+    enabled: bool = False
+    use_openai: bool = True  # Try OpenAI first (if key exists)
+    openai_model: str = "gpt-4o-mini"
+    local_model: Optional[str] = None  # Auto-select if None
+    device: str = "auto"
+    max_length: int = 2048
+    temperature: float = 0.3
 
 
 @dataclass
@@ -93,12 +126,12 @@ class RetryConfig:
 @dataclass
 class PipelineConfig:
     """Main pipeline configuration."""
-    
+
     # Paths
     media_dir: str = "./files"
     temp_dir: Optional[str] = None  # Auto-generated if not set
     results_dir: Optional[str] = None  # Auto-generated if not set
-    
+
     # Sub-configurations
     audio: AudioConfig = field(default_factory=AudioConfig)
     vad: VADConfig = field(default_factory=VADConfig)
@@ -108,35 +141,36 @@ class PipelineConfig:
     diarization: DiarizationConfig = field(default_factory=DiarizationConfig)
     redundancy: RedundancyConfig = field(default_factory=RedundancyConfig)
     retry: RetryConfig = field(default_factory=RetryConfig)
-    
+    llm: LLMConfig = field(default_factory=LLMConfig)
+
     # Processing options
     preserve_timestamps: bool = True  # Keep mapping to original timestamps
     subprocess_timeout_s: int = 600  # 10 minutes default timeout
     lazy_load_models: bool = True  # Load models only when needed
     checkpoint_enabled: bool = True  # Enable checkpoint/resume for long processes
-    
+
     def __post_init__(self):
         """Validate and normalize configuration after initialization."""
         self.media_dir = str(Path(self.media_dir).resolve())
-        
+
         if self.temp_dir is None:
             self.temp_dir = str(Path(self.media_dir) / "temp")
         else:
             self.temp_dir = str(Path(self.temp_dir).resolve())
-            
+
         if self.results_dir is None:
             self.results_dir = str(Path(self.media_dir) / "results")
         else:
             self.results_dir = str(Path(self.results_dir).resolve())
-    
+
     def validate(self) -> None:
         """Validate configuration values."""
         errors = []
-        
+
         # Audio validation
         if self.audio.sample_rate not in [8000, 16000, 22050, 44100, 48000]:
             errors.append(f"Invalid sample rate: {self.audio.sample_rate}")
-        
+
         # VAD validation
         if not 0 <= self.vad.mode <= 3:
             errors.append(f"VAD mode must be 0-3, got: {self.vad.mode}")
@@ -146,70 +180,76 @@ class PipelineConfig:
             errors.append(f"VAD start threshold must be 0-1")
         if not 0 <= self.vad.stop_threshold <= 1:
             errors.append(f"VAD stop threshold must be 0-1")
-            
+
         # Transcription validation
         valid_models = ["tiny", "base", "small", "medium", "large", "large-v2", "large-v3", "large-v3-turbo"]
         if self.transcription.model not in valid_models:
             logger.warning(f"Unknown Whisper model: {self.transcription.model}")
-            
+
         # Diarization validation
         if self.diarization.min_speakers > self.diarization.max_speakers:
             errors.append("min_speakers cannot be greater than max_speakers")
-            
+
         # Redundancy validation
         if not 0 <= self.redundancy.similarity_threshold <= 1:
             errors.append("Similarity threshold must be 0-1")
-        
+
         if errors:
             raise ConfigurationError(
                 "Configuration validation failed",
                 details="\n".join(errors)
             )
-    
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "PipelineConfig":
-        """Create configuration from dictionary."""
+        """
+        Create configuration from dictionary.
+
+        Note: Keys starting with '_' are treated as comments and ignored.
+        """
         config = cls()
-        
+
         # Simple fields
-        for key in ["media_dir", "temp_dir", "results_dir", "preserve_timestamps", 
+        for key in ["media_dir", "temp_dir", "results_dir", "preserve_timestamps",
                     "subprocess_timeout_s", "lazy_load_models", "checkpoint_enabled"]:
             if key in data:
                 setattr(config, key, data[key])
-        
-        # Nested configs
+
+        # Nested configs - filter comment keys before passing to dataclass
         if "audio" in data:
-            config.audio = AudioConfig(**data["audio"])
+            config.audio = AudioConfig(**_filter_comment_keys(data["audio"]))
         if "vad" in data:
-            config.vad = VADConfig(**data["vad"])
+            config.vad = VADConfig(**_filter_comment_keys(data["vad"]))
         if "noise_reduction" in data:
-            config.noise_reduction = NoiseReductionConfig(**data["noise_reduction"])
+            config.noise_reduction = NoiseReductionConfig(**_filter_comment_keys(data["noise_reduction"]))
         if "vocal_separation" in data:
-            config.vocal_separation = VocalSeparationConfig(**data["vocal_separation"])
+            config.vocal_separation = VocalSeparationConfig(**_filter_comment_keys(data["vocal_separation"]))
         if "transcription" in data:
-            config.transcription = TranscriptionConfig(**data["transcription"])
+            config.transcription = TranscriptionConfig(**_filter_comment_keys(data["transcription"]))
         if "diarization" in data:
-            config.diarization = DiarizationConfig(**data["diarization"])
+            config.diarization = DiarizationConfig(**_filter_comment_keys(data["diarization"]))
         if "redundancy" in data:
-            config.redundancy = RedundancyConfig(**data["redundancy"])
+            config.redundancy = RedundancyConfig(**_filter_comment_keys(data["redundancy"]))
         if "retry" in data:
-            config.retry = RetryConfig(**data["retry"])
-            
+            config.retry = RetryConfig(**_filter_comment_keys(data["retry"]))
+        if "llm" in data:
+            config.llm = LLMConfig(**_filter_comment_keys(data["llm"]))
+
         config.__post_init__()
         return config
-    
+
     @classmethod
     def from_json(cls, path: str) -> "PipelineConfig":
         """Load configuration from JSON file."""
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         return cls.from_dict(data)
-    
+
     @classmethod
     def from_env(cls) -> "PipelineConfig":
         """Create configuration from environment variables."""
         config = cls()
-        
+
         # Override with environment variables
         if media_dir := os.getenv("AUDIO_PIPELINE_MEDIA_DIR"):
             config.media_dir = media_dir
@@ -219,15 +259,15 @@ class PipelineConfig:
             config.transcription.language = language
         if prompt := os.getenv("AUDIO_PIPELINE_PROMPT"):
             config.transcription.prompt = prompt
-            
+
         config.__post_init__()
         return config
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert configuration to dictionary."""
         from dataclasses import asdict
         return asdict(self)
-    
+
     def to_json(self, path: str) -> None:
         """Save configuration to JSON file."""
         with open(path, "w", encoding="utf-8") as f:

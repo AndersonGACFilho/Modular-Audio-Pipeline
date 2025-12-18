@@ -1,0 +1,90 @@
+{
+  "media_dir": "./files",
+  "preserve_timestamps": true,
+  "subprocess_timeout_s": 600,
+  "lazy_load_models": true,
+  "checkpoint_enabled": true,
+  
+  "audio": {
+    "sample_rate": 16000,
+    "channels": 1,
+    "bit_depth": 16
+  },
+  
+  "vad": {
+    "enabled": true,
+    "provider": "silero",
+    "threshold": 0.5,
+    "min_speech_duration_ms": 250
+  },
+
+  "noise_reduction": {
+    "enabled": true,
+    "auto_detect_noise": true,
+    "noise_sample_duration_s": 0.5
+  },
+
+  "vocal_separation": {
+    "enabled": false,
+    "model": "htdemucs",
+    "chunk_minutes": 5.0,
+    "auto_detect": true
+  },
+
+  "transcription": {
+    "backend": "faster-whisper",
+    "model": "large-v3",
+    "device": "cuda",
+    "compute_type": "float16",
+    "language": "pt",
+    "task": "transcribe",
+    "temperature": 0.0,
+    "beam_size": 5,
+    "prompt": "Esta gravação é meu chefe me dando instruções sobre tarefas de trabalho."
+  },
+
+  "diarization": {
+    "enabled": true,
+    "min_speakers": 1,
+    "max_speakers": 5,
+    "model": "pyannote/speaker-diarization-3.1"
+  },
+
+  "redundancy": {
+    "enabled": true,
+    "similarity_threshold": 0.85
+  },
+
+  "llm": {
+    "enabled": true,
+    "_comment": "Hybrid LLM: auto-selects OpenAI (if key exists) or local HuggingFace",
+
+    "use_openai": true,
+    "openai_model": "gpt-4o-mini",
+
+    "local_model": null,
+    "_local_model_options": [
+      "mistralai/Mistral-7B-Instruct-v0.2",
+      "microsoft/Phi-3-mini-4k-instruct",
+      "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+    ],
+
+    "device": "auto",
+    "max_length": 2048,
+    "temperature": 0.3,
+
+    "_notes": [
+      "If OPENAI_API_KEY is set and use_openai=true, uses OpenAI API",
+      "Otherwise, downloads and runs local HuggingFace model",
+      "local_model=null means auto-select based on available VRAM",
+      "device='auto' chooses cuda if available, else cpu"
+    ]
+  },
+
+  "retry": {
+    "max_attempts": 3,
+    "initial_delay_s": 1.0,
+    "exponential_backoff": true,
+    "max_delay_s": 30.0
+  }
+}

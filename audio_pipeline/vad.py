@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Tuple, List, Optional
 import logging
 
+import torch
+import torchaudio
 import webrtcvad
 
 from .protocols import VADProtocol, TimestampMapping
@@ -25,16 +27,16 @@ logger = logging.getLogger(__name__)
 class VADFilter(VADProtocol):
     """
     Filters out non-speech using WebRTC VAD.
-    
+
     Implements timestamp preservation for mapping back to original audio.
     """
-    
+
     # WebRTC VAD only supports these sample rates
     SUPPORTED_SAMPLE_RATES = [8000, 16000, 32000, 48000]
-    
+
     # WebRTC VAD only supports these frame durations
     SUPPORTED_FRAME_DURATIONS = [10, 20, 30]
-    
+
     def __init__(
         self,
         sample_rate: int = 16000,
@@ -46,7 +48,7 @@ class VADFilter(VADProtocol):
     ):
         """
         Initialize VAD filter.
-        
+
         Args:
             sample_rate: Audio sample rate (must be 8000, 16000, 32000, or 48000)
             frame_duration_ms: Frame duration in ms (must be 10, 20, or 30)
@@ -61,27 +63,27 @@ class VADFilter(VADProtocol):
                 f"Unsupported sample rate: {sample_rate}",
                 details=f"WebRTC VAD supports: {self.SUPPORTED_SAMPLE_RATES}"
             )
-        
+
         if frame_duration_ms not in self.SUPPORTED_FRAME_DURATIONS:
             raise VADError(
                 f"Unsupported frame duration: {frame_duration_ms}ms",
                 details=f"WebRTC VAD supports: {self.SUPPORTED_FRAME_DURATIONS}ms"
             )
-        
+
         if not 0 <= vad_mode <= 3:
             raise VADError(f"VAD mode must be 0-3, got: {vad_mode}")
-        
+
         self.sample_rate = sample_rate
         self.frame_ms = frame_duration_ms
         self.padding_ms = padding_duration_ms
         self.start_th = start_threshold
         self.stop_th = stop_threshold
-        
+
         try:
             self.vad = webrtcvad.Vad(vad_mode)
         except Exception as e:
             raise VADError("Failed to initialize WebRTC VAD", details=str(e))
-    
+
     @classmethod
     def from_config(cls, config: PipelineConfig) -> "VADFilter":
         """Create VAD filter from pipeline configuration."""
@@ -93,7 +95,7 @@ class VADFilter(VADProtocol):
             stop_threshold=config.vad.stop_threshold,
             vad_mode=config.vad.mode
         )
-    
+
     def read_wave(self, path: str) -> Tuple[bytes, int]:
         """Read WAV file and return PCM data and sample rate."""
         try:
@@ -101,17 +103,17 @@ class VADFilter(VADProtocol):
                 sr = wf.getframerate()
                 channels = wf.getnchannels()
                 sample_width = wf.getsampwidth()
-                
+
                 if channels != 1:
                     raise VADError(f"VAD requires mono audio, got {channels} channels")
                 if sample_width != 2:
                     raise VADError(f"VAD requires 16-bit audio, got {sample_width * 8}-bit")
-                
+
                 pcm = wf.readframes(wf.getnframes())
             return pcm, sr
         except wave.Error as e:
             raise VADError(f"Failed to read WAV file: {path}", details=str(e))
-    
+
     def write_wave(self, path: str, audio: bytes, sample_rate: int) -> None:
         """Write PCM data to WAV file."""
         try:
@@ -122,21 +124,21 @@ class VADFilter(VADProtocol):
                 wf.writeframes(audio)
         except Exception as e:
             raise VADError(f"Failed to write WAV file: {path}", details=str(e))
-    
+
     def _frame_generator(self, pcm: bytes, sample_rate: int) -> List[Tuple[bytes, float, float]]:
         """
         Generate frames from PCM data with timestamps.
-        
+
         Yields:
             Tuples of (frame_bytes, start_time, end_time)
         """
         # Frame size in bytes (16-bit = 2 bytes per sample)
         frame_len = int(sample_rate * (self.frame_ms / 1000) * 2)
-        
+
         frames = []
         offset = 0
         frame_index = 0
-        
+
         while offset + frame_len <= len(pcm):
             frame = pcm[offset:offset + frame_len]
             start_time = frame_index * self.frame_ms / 1000.0
@@ -144,39 +146,39 @@ class VADFilter(VADProtocol):
             frames.append((frame, start_time, end_time))
             offset += frame_len
             frame_index += 1
-        
+
         return frames
-    
+
     def detect_speech_segments(self, input_wav: str) -> List[Tuple[float, float]]:
         """
         Detect speech segments without modifying audio.
-        
+
         Args:
             input_wav: Path to input WAV file
-            
+
         Returns:
             List of (start_seconds, end_seconds) tuples for speech segments
         """
         pcm, sr = self.read_wave(input_wav)
         frames = self._frame_generator(pcm, sr)
-        
+
         ring_size = int(self.padding_ms / self.frame_ms)
         ring = collections.deque(maxlen=ring_size)
-        
+
         speech_segments = []
         triggered = False
         segment_start = 0.0
-        
+
         for frame, start_time, end_time in frames:
             try:
                 is_speech = self.vad.is_speech(frame, sr)
             except Exception:
                 is_speech = False
-            
+
             if not triggered:
                 ring.append((frame, is_speech, start_time, end_time))
                 voiced_count = sum(1 for _, speech, _, _ in ring if speech)
-                
+
                 if voiced_count > self.start_th * ring.maxlen:
                     # Speech started
                     triggered = True
@@ -185,20 +187,20 @@ class VADFilter(VADProtocol):
             else:
                 ring.append((frame, is_speech, start_time, end_time))
                 unvoiced_count = sum(1 for _, speech, _, _ in ring if not speech)
-                
+
                 if unvoiced_count > self.stop_th * ring.maxlen:
                     # Speech ended
                     triggered = False
                     segment_end = ring[0][3] if ring else end_time
                     speech_segments.append((segment_start, segment_end))
                     ring.clear()
-        
+
         # Handle case where speech continues to end
         if triggered:
             speech_segments.append((segment_start, frames[-1][3] if frames else 0))
-        
+
         return speech_segments
-    
+
     def filter_voice(
         self,
         input_wav: str,
@@ -207,39 +209,39 @@ class VADFilter(VADProtocol):
     ) -> Tuple[str, List[TimestampMapping]]:
         """
         Filter audio to keep only voiced segments.
-        
+
         Args:
             input_wav: Path to input WAV file
             output_dir: Directory for output file
             preserve_timestamps: Whether to return timestamp mappings
-            
+
         Returns:
             Tuple of (output_path, list_of_timestamp_mappings)
         """
         pcm, sr = self.read_wave(input_wav)
         frames = self._frame_generator(pcm, sr)
-        
+
         if not frames:
             raise VADError("No frames generated from audio")
-        
+
         ring_size = int(self.padding_ms / self.frame_ms)
         ring = collections.deque(maxlen=ring_size)
-        
+
         voiced_segments: List[Tuple[List[bytes], float, float]] = []
         current_segment_frames: List[bytes] = []
         current_segment_start = 0.0
         triggered = False
-        
+
         for frame, start_time, end_time in frames:
             try:
                 is_speech = self.vad.is_speech(frame, sr)
             except Exception:
                 is_speech = False
-            
+
             if not triggered:
                 ring.append((frame, is_speech, start_time, end_time))
                 voiced_count = sum(1 for _, speech, _, _ in ring if speech)
-                
+
                 if voiced_count > self.start_th * ring.maxlen:
                     # Speech started - include buffered frames
                     triggered = True
@@ -250,7 +252,7 @@ class VADFilter(VADProtocol):
                 current_segment_frames.append(frame)
                 ring.append((frame, is_speech, start_time, end_time))
                 unvoiced_count = sum(1 for _, speech, _, _ in ring if not speech)
-                
+
                 if unvoiced_count > self.stop_th * ring.maxlen:
                     # Speech ended
                     triggered = False
@@ -262,7 +264,7 @@ class VADFilter(VADProtocol):
                     ))
                     current_segment_frames = []
                     ring.clear()
-        
+
         # Handle trailing speech
         if triggered and current_segment_frames:
             voiced_segments.append((
@@ -270,19 +272,19 @@ class VADFilter(VADProtocol):
                 current_segment_start,
                 frames[-1][2]
             ))
-        
+
         if not voiced_segments:
             logger.warning("No voiced segments detected, returning original audio")
             return input_wav, []
-        
+
         # Build output audio and timestamp mappings
         all_voiced_frames = []
         timestamp_mappings: List[TimestampMapping] = []
         processed_position = 0.0
-        
+
         for segment_frames, orig_start, orig_end in voiced_segments:
             segment_duration = len(segment_frames) * self.frame_ms / 1000.0
-            
+
             if preserve_timestamps:
                 mapping = TimestampMapping(
                     processed_start=processed_position,
@@ -291,36 +293,36 @@ class VADFilter(VADProtocol):
                     original_end=orig_end
                 )
                 timestamp_mappings.append(mapping)
-            
+
             all_voiced_frames.extend(segment_frames)
             processed_position += segment_duration
-        
+
         # Write output
         voiced_audio = b''.join(all_voiced_frames)
         out_path = os.path.join(output_dir, f"{Path(input_wav).stem}_voice.wav")
         self.write_wave(out_path, voiced_audio, sr)
-        
+
         # Log statistics
         original_duration = len(frames) * self.frame_ms / 1000.0
         voiced_duration = processed_position
         removed_duration = original_duration - voiced_duration
-        
+
         logger.info(
             f"VAD filtered: {out_path} "
             f"(kept {voiced_duration:.1f}s, removed {removed_duration:.1f}s, "
             f"{voiced_duration/original_duration*100:.1f}% voiced)"
         )
-        
+
         return out_path, timestamp_mappings
 
 
 class NoOpVADFilter(VADProtocol):
     """
     No-operation VAD that passes through audio unchanged.
-    
+
     Used when VAD is disabled.
     """
-    
+
     def filter_voice(
         self,
         input_wav: str,
@@ -328,24 +330,165 @@ class NoOpVADFilter(VADProtocol):
     ) -> Tuple[str, List[TimestampMapping]]:
         """Return input unchanged with identity mapping."""
         logger.debug("NoOp VAD: passing through unchanged")
-        
+
         # Create identity mapping
         import wave
         with wave.open(input_wav, 'rb') as wf:
             duration = wf.getnframes() / wf.getframerate()
-        
+
         mapping = TimestampMapping(
             processed_start=0.0,
             processed_end=duration,
             original_start=0.0,
             original_end=duration
         )
-        
+
         return input_wav, [mapping]
-    
+
     def detect_speech_segments(self, input_wav: str) -> List[Tuple[float, float]]:
         """Return entire audio as one segment."""
         import wave
         with wave.open(input_wav, 'rb') as wf:
             duration = wf.getnframes() / wf.getframerate()
         return [(0.0, duration)]
+
+
+import torch
+from typing import List, Tuple
+
+
+# ... existing imports...
+
+class SileroVADFilter(VADProtocol):
+    """
+    DNN-based VAD using Silero (Higher accuracy, robustness to noise).
+    """
+
+    def __init__(self, threshold: float = 0.5, sampling_rate: int = 16000):
+        self.threshold = threshold
+        self.sampling_rate = sampling_rate
+        self.model = None
+        self.utils = None
+
+    def _load_model(self):
+        """
+        Load Silero VAD model from torch hub.
+
+        Raises:
+            VADError: If model loading fails
+        """
+        if self.model is None:
+            try:
+                # Load from torch hub (caches locally)
+                self.model, self.utils = torch.hub.load(
+                    repo_or_dir='snakers4/silero-vad',
+                    model='silero_vad',
+                    force_reload=False,
+                    onnx=False
+                )
+            except Exception as e:
+                raise VADError(f"Failed to load Silero VAD: {e}")
+
+    def detect_speech_segments(self, input_wav: str) -> List:
+        """
+        Detect speech segments without modifying audio.
+
+        Args:
+            input_wav: Path to input WAV file
+        Returns:
+            List of (start_seconds, end_seconds) tuples for speech segments
+        """
+        self._load_model()
+        (get_speech_timestamps, _, read_audio, *_) = self.utils
+
+        wav = read_audio(input_wav, sampling_rate=self.sampling_rate)
+
+        timestamps = get_speech_timestamps(
+        wav,
+        self.model,
+        threshold = self.threshold,
+        sampling_rate = self.sampling_rate,
+        return_seconds = True
+        )
+
+        return [(item['start'], item['end']) for item in timestamps]
+
+
+    def filter_voice(self, input_wav: str, output_dir: str) -> Tuple[str, List[TimestampMapping]]:
+        """
+        Filter audio to keep only voiced segments using Silero VAD.
+
+        Args:
+            input_wav: Path to input WAV file
+            output_dir: Directory for output file
+
+        Returns:
+            Tuple of (output_path, list_of_timestamp_mappings)
+        """
+        self._load_model()
+        (get_speech_timestamps, _, read_audio, _, _) = self.utils
+
+        wav = read_audio(input_wav, sampling_rate=self.sampling_rate)
+
+        timestamps = get_speech_timestamps(
+            wav,
+            self.model,
+            threshold = self.threshold,
+            sampling_rate = self.sampling_rate,
+            return_seconds = True
+        )
+
+        if not timestamps:
+            logger.warning("No voiced segments detected, returning original audio")
+            return input_wav, []
+
+        voiced_audio = []
+        timestamp_mappings: List[TimestampMapping] = []
+        processed_position = 0.0
+
+        for item in timestamps:
+            start_sample = int(item['start'] * self.sampling_rate)
+            end_sample = int(item['end'] * self.sampling_rate)
+            segment = wav[start_sample:end_sample]
+            segment_duration = (end_sample - start_sample) / self.sampling_rate
+
+            mapping = TimestampMapping(
+                processed_start=processed_position,
+                processed_end=processed_position + segment_duration,
+                original_start=item['start'],
+                original_end=item['end']
+            )
+            timestamp_mappings.append(mapping)
+
+            voiced_audio.append(segment)
+            processed_position += segment_duration
+
+        voiced_audio_tensor = torch.cat(voiced_audio)
+
+        out_path = os.path.join(output_dir, f"{Path(input_wav).stem}_voice.wav")
+
+        # Use torchaudio.save instead of Silero's write_audio to avoid compatibility issues
+        # Ensure tensor is 2D (channels, samples)
+        if voiced_audio_tensor.dim() == 1:
+            voiced_audio_tensor = voiced_audio_tensor.unsqueeze(0)
+
+        torchaudio.save(
+            out_path,
+            voiced_audio_tensor,
+            sample_rate=self.sampling_rate,
+            encoding="PCM_S",
+            bits_per_sample=16
+        )
+
+        # Log statistics
+        original_duration = wav.shape[0] / self.sampling_rate
+        voiced_duration = processed_position
+        removed_duration = original_duration - voiced_duration
+
+        logger.info(
+            f"Silero VAD filtered: {out_path} "
+            f"(kept {voiced_duration:.1f}s, removed {removed_duration:.1f}s, "
+            f"{voiced_duration/original_duration*100:.1f}% voiced)"
+        )
+
+        return out_path, timestamp_mappings

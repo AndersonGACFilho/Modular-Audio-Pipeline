@@ -1,4 +1,4 @@
-name: AudioPipeline
+name: VideoTranscripter
 channels:
   - conda-forge
   - defaults
@@ -16,11 +16,13 @@ dependencies:
 
   # Pip dependencies
   - pip:
-      # PyTorch with CUDA 11.8 - installed from PyTorch index
-      - --extra-index-url https://download.pytorch.org/whl/cu118
-      - torch==2.5.1+cu118
-      - torchvision==0.20.1+cu118
-      - torchaudio==2.5.1+cu118
+      # PyTorch with CUDA 12.1 - installed from PyTorch index (update extra-index-url)
+      - --extra-index-url https://download.pytorch.org/whl/cu121
+      - torch==2.5.1+cu121
+      - torchvision==0.20.1+cu121
+      - torchaudio==2.5.1+cu121
+      - transformers>=4.40.0,<4.41.0
+      - accelerate>=0.30.0,<0.31.0
 
       # Lightning ecosystem (optional, for advanced use)
       - lightning>=2.4.0,<2.5.0
@@ -42,11 +44,22 @@ dependencies:
 
       # Transcription
       - openai-whisper>=20250625
-      # Optional: faster-whisper for better performance
-      # - faster-whisper>=1.0.0
+      # Optimized Inference Engine
+      - faster-whisper==1.2.1
+      - ctranslate2<5,>=4.0
+
+      # LLM Structured Output
+      - instructor>=1.0.0
+      - pydantic>=2.0.0
+      - openai>=1.0.0
 
       # Speaker diarization
       - pyannote.audio>=3.1.0,<3.2.0
 
       # Vocal separation
       - demucs>=4.0.0
+
+# Optional: if you prefer to install CUDA runtime via conda (instead of relying on wheel-built CUDA),
+# you can add a cudatoolkit line below. On Windows, using the official PyTorch wheels with +cu121
+# is usually sufficient and recommended.
+# - cudatoolkit=12.1
