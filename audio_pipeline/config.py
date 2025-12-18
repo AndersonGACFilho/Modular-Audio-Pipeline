@@ -85,6 +85,12 @@ class TranscriptionConfig:
     prompt: str = ""
     batch_size: int = 16
 
+@dataclass
+class SegmentMergingConfig:
+    """Configuration for merging diarization segments."""
+    enabled: bool = True
+    max_gap_s: float = 0.5
+
 
 @dataclass
 class LLMConfig:
@@ -141,6 +147,7 @@ class PipelineConfig:
     diarization: DiarizationConfig = field(default_factory=DiarizationConfig)
     redundancy: RedundancyConfig = field(default_factory=RedundancyConfig)
     retry: RetryConfig = field(default_factory=RetryConfig)
+    segment_merging: SegmentMergingConfig = field(default_factory=SegmentMergingConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
 
     # Processing options
@@ -232,6 +239,8 @@ class PipelineConfig:
             config.redundancy = RedundancyConfig(**_filter_comment_keys(data["redundancy"]))
         if "retry" in data:
             config.retry = RetryConfig(**_filter_comment_keys(data["retry"]))
+        if "segment_merging" in data:
+            config.segment_merging = SegmentMergingConfig(**_filter_comment_keys(data["segment_merging"]))
         if "llm" in data:
             config.llm = LLMConfig(**_filter_comment_keys(data["llm"]))
 

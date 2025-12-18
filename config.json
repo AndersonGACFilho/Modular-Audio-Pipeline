@@ -55,6 +55,11 @@
     "similarity_threshold": 0.85
   },
 
+  "segment_merging": {
+    "enabled": true,
+    "max_gap_s": 300.0
+  },
+
   "llm": {
     "enabled": true,
     "_comment": "Hybrid LLM: auto-selects OpenAI (if key exists) or local HuggingFace",

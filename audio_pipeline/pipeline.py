@@ -25,6 +25,7 @@ from .protocols import (
 )
 from .media_handler import MediaHandler
 from .preprocessor import AudioPreprocessor
+from .segment_merger import SegmentMerger
 from .separator import VocalSeparator, NoOpVocalSeparator
 from .vad import VADFilter, SileroVADFilter, NoOpVADFilter
 from .transcriber import WhisperTranscriber, FasterWhisperTranscriber
@@ -323,7 +324,15 @@ class AudioPipeline:
             final_segments = self.redundancy.remove(aligned_segments)
             logger.info(f"✓ Final: {len(final_segments)} segments")
 
-            # Step 10: LLM Post-Processing
+            # Step 10: Merge short segments if needed
+            if self.config.segment_merging.enabled:
+                logger.info("Merging short segments...")
+                merger = SegmentMerger(
+                    max_gap_s=self.config.segment_merging.max_gap_s
+                )
+                final_segments = merger.merge(final_segments)
+
+            # Step 11: LLM Post-Processing
             llm_analysis = None
             if self.llm_processor:
                 try:
