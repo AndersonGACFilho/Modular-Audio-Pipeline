@@ -1,15 +1,17 @@
 """
-Vocal Separator for the Audio Pipeline.
+audio_pipeline.separator
 
-Uses Demucs to isolate vocals from audio with music/background.
-Includes auto-detection and checkpoint support for long files.
+Vocal separation utilities for the audio pipeline.
+
+Provides VocalSeparator (Demucs) and NoOpVocalSeparator implementations with
+chunked processing and optional checkpoint support. Docstrings follow pydoc
+conventions for Sphinx/pydoc extraction.
 """
 
 import os
 import subprocess
 import shutil
 import glob
-import json
 from pathlib import Path
 from typing import Optional
 import logging
@@ -19,10 +21,12 @@ from pydub import AudioSegment
 
 from .protocols import VocalSeparatorProtocol
 from .exceptions import VocalSeparationError
-from .config import PipelineConfig, VocalSeparationConfig
-from .utils import CheckpointManager, get_file_hash
+from .config import PipelineConfig
+from .utils import CheckpointManager
 
 logger = logging.getLogger(__name__)
+
+__all__ = ["VocalSeparator", "NoOpVocalSeparator"]
 
 
 class VocalSeparator(VocalSeparatorProtocol):

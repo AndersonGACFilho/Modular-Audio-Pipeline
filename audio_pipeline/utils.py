@@ -1,4 +1,6 @@
 """
+audio_pipeline.utils
+
 Utility functions for the Audio Pipeline.
 
 Provides retry logic, file validation, checkpoint management, and common operations.
@@ -14,16 +16,14 @@ from pathlib import Path
 from typing import TypeVar, Callable, Optional, Any, Dict, List
 from dataclasses import dataclass, asdict
 
-from .exceptions import FileValidationError, AudioPipelineError
-from .config import RetryConfig
-
+from .exceptions import FileValidationError
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
 
 def retry_with_backoff(
-    config: Optional[RetryConfig] = None,
+    config: Optional[object] = None,
     exceptions: tuple = (Exception,),
     on_retry: Optional[Callable[[Exception, int], None]] = None
 ) -> Callable[[Callable[..., T]], Callable[..., T]]:
@@ -35,8 +35,19 @@ def retry_with_backoff(
         exceptions: Tuple of exceptions to catch
         on_retry: Optional callback on retry (exception, attempt_number)
     """
+    # Lazy import to avoid circular import issues when utils is imported early
     if config is None:
-        config = RetryConfig()
+        try:
+            from .config import RetryConfig
+            config = RetryConfig()
+        except Exception:
+            # Fallback defaults if RetryConfig cannot be imported
+            class _Fallback:
+                max_attempts = 3
+                initial_delay_s = 1.0
+                exponential_backoff = True
+                max_delay_s = 30.0
+            config = _Fallback()
     
     def decorator(func: Callable[..., T]) -> Callable[..., T]:
         @functools.wraps(func)

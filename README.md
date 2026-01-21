@@ -1,17 +1,17 @@
-# Audio Processing & Transcription Pipeline v2.0
+# Audio Processing & Transcription Pipeline
 
 A modular, production-ready Python pipeline for audio transcription with speaker diarization.
 
 ## Features
 
-- **Modular Architecture**: Clean separation of concerns with dependency injection
-- **Smart Preprocessing**: Auto-detect noise segments, optional vocal separation
-- **Timestamp Preservation**: Map processed timestamps back to original audio
-- **Checkpoint/Resume**: Resume interrupted processing for long files
-- **Lazy Loading**: Load heavy models only when needed
-- **Configurable**: JSON configuration files, CLI arguments, or programmatic API
-- **Error Handling**: Custom exceptions with detailed error messages
-- **Retry Logic**: Exponential backoff for transient failures
+- Modular architecture with dependency injection
+- Smart preprocessing: auto-detect noise, optional vocal separation
+- Timestamp preservation: map processed timestamps back to original audio
+- Checkpoint/resume for long processes
+- Lazy loading for heavy models
+- Configurable via JSON, CLI or programmatic API
+- Custom exceptions and retry logic with exponential backoff
+- Segment merging: consolidate adjacent speaker turns (configurable max gap)
 
 ## Quick Start
 
@@ -48,7 +48,7 @@ pip install openai-whisper pyannote.audio demucs pydub noisereduce pyloudnorm we
 ### System Dependencies
 
 - FFmpeg (required for media conversion)
-- CUDA 11.8+ (recommended for GPU acceleration)
+- CUDA (recommended for GPU acceleration)
 
 ## Configuration
 
@@ -62,18 +62,24 @@ HF_TOKEN=your_hugging_face_token_here
 
 ### JSON Configuration
 
+Example configuration (all example text is in English):
+
 ```json
 {
   "media_dir": "./recordings",
   "transcription": {
     "model": "large-v3-turbo",
-    "language": "pt",
-    "prompt": "Transcreva com precisão..."
+    "language": "en",
+    "prompt": "Transcribe this recording accurately in English. Preserve punctuation and indicate pauses or hesitations when relevant."
   },
   "diarization": {
     "enabled": true,
     "min_speakers": 2,
     "max_speakers": 4
+  },
+  "segment_merging": {
+    "enabled": true,
+    "max_gap_s": 0.5
   }
 }
 ```
@@ -159,8 +165,8 @@ config = PipelineConfig(
 
 # Customize transcription
 config.transcription.model = "large-v3-turbo"
-config.transcription.language = "pt"
-config.transcription.prompt = "Reunião de trabalho..."
+config.transcription.language = "en"
+config.transcription.prompt = "Work meeting: transcribe the discussion accurately in English."
 
 # Disable vocal separation
 config.vocal_separation.enabled = False
@@ -181,6 +187,26 @@ config.validate()
 Media Input → Convert to WAV → Denoise → [Vocal Separation] → Normalize
     → [VAD] → Transcribe → Diarize → Align → Remove Redundancy → Output JSON
 ```
+
+Note: the pipeline now includes an optional segment merging step which consolidates adjacent segments from the same speaker (based on a configurable max_gap_s). A recommended updated flow is:
+
+```
+Media Input → Convert to WAV → Denoise → [Vocal Separation] → Normalize
+    → [VAD] → Transcribe → Diarize → Align → Merge adjacent speaker turns → Remove Redundancy → Output JSON
+```
+
+### Segment Merging
+
+The pipeline provides an optional SegmentMerger that combines consecutive segments attributed to the same speaker when the silence/gap between them is below a threshold. Configure it with the `segment_merging` block in your JSON config:
+
+```
+"segment_merging": {
+  "enabled": true,
+  "max_gap_s": 0.5
+}
+```
+
+Defaults: enabled = true, max_gap_s = 0.5 seconds.
 
 ### Module Responsibilities
 
@@ -223,15 +249,11 @@ pipeline = AudioPipeline(transcriber=MyCustomTranscriber())
 
 ### 2. Auto Noise Detection
 
-Instead of using fixed first 0.5s, automatically finds silent segments:
-
 ```python
 config.noise_reduction.auto_detect_noise = True
 ```
 
 ### 3. Timestamp Preservation
-
-Map processed timestamps back to original audio:
 
 ```python
 # Output segment includes both processed and original timestamps
@@ -247,8 +269,6 @@ Map processed timestamps back to original audio:
 
 ### 4. Checkpoint/Resume
 
-Resume interrupted processing:
-
 ```python
 config.checkpoint_enabled = True
 # If processing fails at step 5, restart will skip completed steps
@@ -256,16 +276,12 @@ config.checkpoint_enabled = True
 
 ### 5. Lazy Model Loading
 
-Models load only when needed:
-
 ```python
 config.lazy_load_models = True
 # Whisper loads on first transcribe(), not at pipeline init
 ```
 
 ### 6. Custom Exceptions
-
-Specific exception types for better error handling:
 
 ```python
 from audio_pipeline import (
@@ -284,8 +300,6 @@ except TranscriptionError as e:
 
 ### 7. Retry Logic
 
-Automatic retry with exponential backoff:
-
 ```python
 config.retry.max_attempts = 3
 config.retry.initial_delay_s = 1.0
@@ -300,7 +314,7 @@ config.retry.exponential_backoff = True
     "source_file": "/path/to/recording.mp3",
     "config": {
       "model": "large-v3-turbo",
-      "language": "pt"
+      "language": "en"
     }
   },
   "segments": [
@@ -308,7 +322,7 @@ config.retry.exponential_backoff = True
       "speaker": "SPEAKER_00",
       "start": 0.0,
       "end": 5.2,
-      "text": "Bom dia, vamos começar a reunião.",
+      "text": "Good morning, let's start the meeting.",
       "original_start": 0.0,
       "original_end": 5.5
     },
@@ -316,7 +330,7 @@ config.retry.exponential_backoff = True
       "speaker": "SPEAKER_01",
       "start": 5.4,
       "end": 12.1,
-      "text": "Boa, temos três itens na pauta hoje.",
+      "text": "We have three items on the agenda today.",
       "original_start": 5.8,
       "original_end": 12.9
     }
@@ -334,10 +348,10 @@ config.retry.exponential_backoff = True
 
 ## Performance Tips
 
-1. **Use GPU**: Ensure CUDA is available for 10x faster processing
-2. **Choose Right Model**: `large-v3-turbo` balances quality and speed
-3. **Disable Unused Features**: Skip diarization for single-speaker audio
-4. **Use Checkpoints**: Enable for files >30 minutes
+1. Use GPU: ensure CUDA is available for faster processing
+2. Choose the right model: `large-v3-turbo` balances quality and speed
+3. Disable unused features: skip diarization for single-speaker audio
+4. Use checkpoints for long files
 
 ## Contributing
 

@@ -43,6 +43,19 @@ def setup_environment() -> None:
     """
     load_dotenv()
 
+    # Defensive monkeypatch for NumPy compatibility issues observed with some libraries
+    # (pyannote.audio sometimes references np.NaN / np.NAN which may be missing in NumPy 2.x builds)
+    try:
+        import numpy as _np
+        for _alias in ("NaN", "NAN"):
+            if not hasattr(_np, _alias):
+                setattr(_np, _alias, _np.nan)
+        if not hasattr(_np, 'nan'):
+            setattr(_np, 'nan', float('nan'))
+    except Exception:
+        # If numpy cannot be imported here, let later imports handle it and fail loudly
+        pass
+
     import warnings
     warnings.filterwarnings("ignore", message=".*torchaudio._backend.*")
     warnings.filterwarnings("ignore", message=".*speechbrain.pretrained.*")
