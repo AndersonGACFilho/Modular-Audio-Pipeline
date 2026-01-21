@@ -167,16 +167,16 @@ class HybridLLMPostProcessor:
             vram_gb = torch.cuda.get_device_properties(0).total_memory / 1024**3
             logger.info(f"Detected VRAM: {vram_gb:.1f}GB")
             
-            if vram_gb >= 16:
-                return self.RECOMMENDED_MODELS[0]  # Mistral-7B
-            elif vram_gb >= 8:
-                return self.RECOMMENDED_MODELS[1]  # Phi-3-mini
+            if vram_gb >= 15:
+                return self.RECOMMENDED_MODELS[0]
+            elif vram_gb >= 7:
+                return self.RECOMMENDED_MODELS[1]
             else:
-                return self.RECOMMENDED_MODELS[2]  # TinyLlama
+                return self.RECOMMENDED_MODELS[2]
         else:
             # CPU - use smallest model
             logger.info("No CUDA detected, using CPU with smallest model")
-            return self.RECOMMENDED_MODELS[2]  # TinyLlama
+            return self.RECOMMENDED_MODELS[2]
     
     def _build_prompt(self, text: str) -> str:
         """Build analysis prompt."""
