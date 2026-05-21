@@ -241,13 +241,13 @@ class AudioPreprocessor(PreprocessorProtocol):
         except Exception as e:
             raise AudioProcessingError("Audio normalization failed", details=str(e))
     
-    def normalize_loudness(self, input_wav: str, target_lufs: float = -16.0) -> str:
+    def normalize_loudness(self, input_wav: str, target_lufs: float = -20.0) -> str:
         """
         Apply LUFS loudness normalization.
         
         Args:
             input_wav: Input WAV file path
-            target_lufs: Target loudness in LUFS (default -16)
+            target_lufs: Target loudness in LUFS (default -20)
             
         Returns:
             Path to loudness-normalized WAV file
@@ -269,12 +269,12 @@ class AudioPreprocessor(PreprocessorProtocol):
                 return input_wav
             
             normalized = pyln.normalize.loudness(samples, loudness, target_lufs)
-            
-            # Prevent clipping
+
             peak = np.abs(normalized).max()
-            if peak > 1.0:
-                normalized /= peak
-                logger.debug(f"Applied limiter to prevent clipping (peak was {peak:.2f})")
+            if peak >= 1.0:
+                reduction_factor = 0.95 / peak
+                normalized *= reduction_factor
+                logger.debug(f"Applied limiter with headroom (original peak: {peak:.2f})")
             
             out_int16 = np.clip(normalized * 32768, -32768, 32767).astype(np.int16).tobytes()
             

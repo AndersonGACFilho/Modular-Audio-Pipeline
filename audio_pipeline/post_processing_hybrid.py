@@ -1,8 +1,20 @@
 """
-Hybrid LLM Post-Processor with OpenAI API + Local HuggingFace fallback.
+Hybrid LLM Post-Processor.
 
-Automatically uses local LLM if OpenAI API key is not available.
+Backend priority (auto-selected):
+  1. Ollama  — if running locally at OLLAMA_HOST (default: http://localhost:11434)
+  2. OpenAI  — if OPENAI_API_KEY is set
+  3. Local HuggingFace model — always available as final fallback
+
+Override via config:
+  llm.use_ollama   = true/false   (default: true  — probe automatically)
+  llm.ollama_model = "llama3"     (default: first available model on the server)
+  llm.use_openai   = true/false
+  llm.openai_model = "gpt-4o-mini"
+  llm.local_model  = null         (auto-select by VRAM) or HuggingFace model id
 """
+
+from __future__ import annotations
 
 from typing import List, Optional, Dict, Any, Literal
 from pydantic import BaseModel, Field, ValidationError
@@ -13,7 +25,10 @@ import re
 
 logger = logging.getLogger(__name__)
 
-# Schema Definition
+# ---------------------------------------------------------------------------
+# Pydantic schemas
+# ---------------------------------------------------------------------------
+
 class ActionItem(BaseModel):
     description: str
     owner: Optional[str] = Field(None)
@@ -27,116 +42,283 @@ class MeetingAnalysis(BaseModel):
     sentiment: str = Field(..., description="Overall tone: Positive, Neutral, or Negative")
 
 
+# ---------------------------------------------------------------------------
+# Main class
+# ---------------------------------------------------------------------------
+
 class HybridLLMPostProcessor:
     """
-    Smart LLM processor that automatically selects backend:
-    - OpenAI API (if key available)
-    - Local HuggingFace model (fallback)
+    Smart LLM processor that automatically selects the best available backend:
+      1. Ollama  (local server — zero in-process VRAM cost for the pipeline)
+      2. OpenAI  (cloud API)
+      3. Local HuggingFace model (downloaded on demand)
     """
-    
-    # Recommended local models (ordered by performance/size)
-    RECOMMENDED_MODELS = [
-        "mistralai/Mistral-7B-Instruct-v0.2",      # Best quality
-        "microsoft/Phi-3-mini-4k-instruct",        # Good balance
-        "TinyLlama/TinyLlama-1.1B-Chat-v1.0",     # Fastest/smallest
+
+    # HuggingFace fallback models ordered by quality/size
+    RECOMMENDED_HF_MODELS = [
+        "mistralai/Mistral-7B-Instruct-v0.2",   # Best quality
+        "microsoft/Phi-3-mini-4k-instruct",      # Good balance
+        "TinyLlama/TinyLlama-1.1B-Chat-v1.0",   # Fastest/smallest
     ]
-    
+
+    # Preferred Ollama models to try when no model is specified (in order)
+    PREFERRED_OLLAMA_MODELS = [
+        "llama3", "llama3.1", "llama3.2",
+        "mistral", "phi3", "gemma2", "qwen2",
+    ]
+
     def __init__(
         self,
+        # OpenAI options
         model: str = "gpt-4o-mini",
+        # Ollama options
+        ollama_host: Optional[str] = None,
+        ollama_model: Optional[str] = None,
+        use_ollama: bool = True,
+        # HuggingFace options
         local_model: Optional[str] = None,
         device: str = "auto",
         max_length: int = 2048,
+        # Shared options
         temperature: float = 0.3,
-        force_local: bool = False
+        force_local: bool = False,
+        lazy_load: bool = False,
     ):
         """
         Initialize hybrid processor.
-        
+
         Args:
-            model: OpenAI model name
-            local_model: HuggingFace model (auto-select if None)
-            device: Device for local model ('cuda', 'cpu', or 'auto')
-            max_length: Max tokens for local model
-            temperature: Sampling temperature
-            force_local: Force local model even if API key exists
+            model:        OpenAI model name.
+            ollama_host:  Ollama base URL. Defaults to OLLAMA_HOST env var or
+                          http://localhost:11434.
+            ollama_model: Ollama model name. Auto-detected if None.
+            use_ollama:   Probe for Ollama before trying other backends.
+            local_model:  HuggingFace model id. Auto-selected by VRAM if None.
+            device:       'cuda', 'cpu', or 'auto'.
+            max_length:   Max new tokens for generation.
+            temperature:  Sampling temperature.
+            force_local:  Skip Ollama and OpenAI; go straight to HuggingFace.
+            lazy_load:    Defer HuggingFace model loading until process() is called.
         """
         self.openai_model = model
+        self.ollama_host = (
+            ollama_host or os.getenv("OLLAMA_HOST", "http://localhost:11434")
+        ).rstrip("/")
+        self.ollama_model = ollama_model
+        self.use_ollama = use_ollama
         self.local_model_name = local_model
         self.device = device
         self.max_length = max_length
         self.temperature = temperature
-        
-        # Determine backend
+        self._lazy_load = lazy_load
+
         self.api_key = os.getenv("OPENAI_API_KEY")
-        self.backend: Literal["openai", "local"] = "local"
-        
-        if self.api_key and not force_local:
+        self.backend: Literal["ollama", "openai", "local"] = "local"
+
+        # --- Backend selection ---
+        if not force_local and use_ollama:
+            detected = self._detect_ollama()
+            if detected:
+                self.backend = "ollama"
+                self.ollama_model = detected
+                logger.info(f"✓ Ollama available → model: {self.ollama_model}")
+                return
+
+        if not force_local and self.api_key:
             self.backend = "openai"
             logger.info(f"Using OpenAI API: {self.openai_model}")
             self._init_openai()
-        else:
-            self.backend = "local"
-            logger.info("OpenAI API key not found, using local HuggingFace model")
+            return
+
+        # Fallback: HuggingFace
+        self.backend = "local"
+        logger.info("Using local HuggingFace model (fallback)")
+        if not lazy_load:
             self._init_local()
-    
+        else:
+            import torch
+            if self.device == "auto":
+                self.device = "cuda" if torch.cuda.is_available() else "cpu"
+            if not self.local_model_name:
+                self.local_model_name = self._select_best_hf_model()
+            logger.info(f"Local HF model selected (lazy): {self.local_model_name}")
+            self.pipe = None
+            self.tokenizer = None
+            self.model = None
+
+    # ------------------------------------------------------------------
+    # Ollama
+    # ------------------------------------------------------------------
+
+    def _detect_ollama(self) -> Optional[str]:
+        """
+        Probe the Ollama server at self.ollama_host.
+
+        Returns the model name to use, or None if Ollama is unreachable / empty.
+        """
+        try:
+            import urllib.request
+
+            req = urllib.request.Request(
+                f"{self.ollama_host}/api/tags", method="GET"
+            )
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                data = json.loads(resp.read().decode())
+
+            available: List[str] = [
+                m["name"].split(":")[0] for m in data.get("models", [])
+            ]
+
+            if not available:
+                logger.info("Ollama is running but has no models pulled yet.")
+                return None
+
+            logger.info(f"Ollama available — models: {available}")
+
+            # Honour caller-specified model
+            if self.ollama_model:
+                base = self.ollama_model.split(":")[0]
+                if base in available or self.ollama_model in available:
+                    return self.ollama_model
+                logger.warning(
+                    f"Requested Ollama model '{self.ollama_model}' not found on server. "
+                    "Auto-selecting from available models."
+                )
+
+            # Prefer known-good models
+            for preferred in self.PREFERRED_OLLAMA_MODELS:
+                if preferred in available:
+                    return preferred
+
+            # Fall back to whatever is installed
+            return available[0]
+
+        except Exception as e:
+            logger.debug(f"Ollama probe failed: {e}")
+            return None
+
+    def _process_ollama(self, text: str) -> Dict[str, Any]:
+        """Send request to Ollama /api/chat."""
+        import urllib.request
+
+        payload = {
+            "model": self.ollama_model,
+            "stream": False,
+            "options": {
+                "temperature": self.temperature,
+                "num_predict": self.max_length,
+            },
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an expert meeting analyst. "
+                        "Always respond with valid JSON and nothing else."
+                    ),
+                },
+                {"role": "user", "content": self._build_prompt(text)},
+            ],
+        }
+
+        data = json.dumps(payload).encode()
+        req = urllib.request.Request(
+            f"{self.ollama_host}/api/chat",
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            result = json.loads(resp.read().decode())
+
+        content = result.get("message", {}).get("content", "")
+        if not content:
+            raise ValueError("Empty response from Ollama")
+
+        return self._extract_json(content)
+
+    # ------------------------------------------------------------------
+    # OpenAI
+    # ------------------------------------------------------------------
+
     def _init_openai(self):
         """Initialize OpenAI client."""
         try:
             from openai import OpenAI
-            from openai.types.chat import (
-                ChatCompletionSystemMessageParam,
-                ChatCompletionUserMessageParam
-            )
-            
             self.openai_client = OpenAI(api_key=self.api_key)
-            self.ChatCompletionSystemMessageParam = ChatCompletionSystemMessageParam
-            self.ChatCompletionUserMessageParam = ChatCompletionUserMessageParam
             logger.info("✓ OpenAI client initialized")
-            
         except ImportError:
-            logger.warning("openai package not installed, falling back to local")
+            logger.warning("openai package not installed, falling back to local HF model")
             self.backend = "local"
             self._init_local()
-    
+
+    def _process_openai(self, text: str) -> Dict[str, Any]:
+        """Process with OpenAI API."""
+        response = self.openai_client.chat.completions.create(
+            model=self.openai_model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are an expert meeting analyst. Always respond with valid JSON.",
+                },
+                {"role": "user", "content": self._build_prompt(text)},
+            ],
+            temperature=self.temperature,
+        )
+        content = response.choices[0].message.content
+        if not content:
+            raise ValueError("Empty response from OpenAI")
+        return json.loads(content)
+
+    # ------------------------------------------------------------------
+    # HuggingFace local
+    # ------------------------------------------------------------------
+
+    def _select_best_hf_model(self) -> str:
+        """Auto-select HuggingFace model based on available VRAM."""
+        import torch
+
+        if torch.cuda.is_available():
+            vram_gb = torch.cuda.get_device_properties(0).total_memory / 1024 ** 3
+            logger.info(f"Detected VRAM: {vram_gb:.1f}GB")
+            if vram_gb >= 15:
+                return self.RECOMMENDED_HF_MODELS[0]
+            elif vram_gb >= 7:
+                return self.RECOMMENDED_HF_MODELS[1]
+            else:
+                return self.RECOMMENDED_HF_MODELS[2]
+
+        logger.info("No CUDA — using smallest HF model on CPU")
+        return self.RECOMMENDED_HF_MODELS[2]
+
     def _init_local(self):
-        """Initialize local HuggingFace model."""
+        """Load HuggingFace model into memory."""
         try:
             import torch
-            from transformers import (
-                AutoTokenizer,
-                AutoModelForCausalLM,
-                pipeline
-            )
-            
-            # Auto-select device
+            from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+
             if self.device == "auto":
                 self.device = "cuda" if torch.cuda.is_available() else "cpu"
-            
+
             logger.info(f"Device: {self.device}")
-            
-            # Auto-select model if not specified
+
             if not self.local_model_name:
-                self.local_model_name = self._select_best_model()
-            
+                self.local_model_name = self._select_best_hf_model()
+
             logger.info(f"Loading local model: {self.local_model_name}")
             logger.info("(This may take a few minutes on first run...)")
-            
-            # Load tokenizer and model
+
             self.tokenizer = AutoTokenizer.from_pretrained(
-                self.local_model_name,
-                trust_remote_code=True
+                self.local_model_name, trust_remote_code=True
             )
-            
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.local_model_name,
                 torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
                 device_map=self.device,
                 trust_remote_code=True,
-                low_cpu_mem_usage=True
+                low_cpu_mem_usage=True,
+                attn_implementation="eager",
             )
-
-            # Create pipeline
             self.pipe = pipeline(
                 "text-generation",
                 model=self.model,
@@ -145,192 +327,137 @@ class HybridLLMPostProcessor:
                 temperature=self.temperature,
                 do_sample=True,
                 top_p=0.9,
-                repetition_penalty=1.1
+                repetition_penalty=1.1,
             )
+            logger.info("✓ Local HF model loaded successfully")
 
-            logger.info("✓ Local model loaded successfully")
-            
         except ImportError as e:
             raise RuntimeError(
                 f"transformers or torch not installed: {e}\n"
                 "Install with: pip install transformers torch accelerate"
             )
         except Exception as e:
-            raise RuntimeError(f"Failed to load local model: {e}")
-    
-    def _select_best_model(self) -> str:
-        """Auto-select best available model based on system resources."""
-        import torch
-        
-        # Check VRAM if CUDA available
-        if torch.cuda.is_available():
-            vram_gb = torch.cuda.get_device_properties(0).total_memory / 1024**3
-            logger.info(f"Detected VRAM: {vram_gb:.1f}GB")
-            
-            if vram_gb >= 15:
-                return self.RECOMMENDED_MODELS[0]
-            elif vram_gb >= 7:
-                return self.RECOMMENDED_MODELS[1]
-            else:
-                return self.RECOMMENDED_MODELS[2]
-        else:
-            # CPU - use smallest model
-            logger.info("No CUDA detected, using CPU with smallest model")
-            return self.RECOMMENDED_MODELS[2]
-    
+            raise RuntimeError(f"Failed to load local HF model: {e}")
+
+    def _process_local(self, text: str) -> Dict[str, Any]:
+        """Process with local HuggingFace model."""
+        if self.pipe is None:
+            logger.info("Lazy-loading local HF model now...")
+            self._init_local()
+
+        prompt = self._build_prompt(text)
+        outputs = self.pipe(prompt, max_new_tokens=self.max_length)
+        generated_text = outputs[0]["generated_text"]
+        response = generated_text[len(prompt):].strip()
+        return self._extract_json(response)
+
+    # ------------------------------------------------------------------
+    # Shared helpers
+    # ------------------------------------------------------------------
+
     def _build_prompt(self, text: str) -> str:
-        """Build analysis prompt."""
-        return f"""You are an expert meeting analyst. Analyze the following transcription and extract key information.
-
-                Return your analysis in valid JSON format with these exact keys:
-                - "summary": A brief executive summary (2-3 sentences)
-                - "topics": A list of main topics discussed
-                - "action_items": A list of tasks, each with "description", "owner" (can be null), and "priority" (High/Medium/Low)
-                - "sentiment": Overall tone (Positive, Neutral, or Negative)
-
-                Transcription:
-                {text}
-
-                JSON Analysis:"""
+        return (
+            "You are an expert meeting analyst. Analyze the following transcription "
+            "and extract key information.\n\n"
+            "Return your analysis in valid JSON format with these exact keys:\n"
+            '- "summary": A brief executive summary (2-3 sentences)\n'
+            '- "topics": A list of main topics discussed\n'
+            '- "action_items": A list of tasks, each with "description", '
+            '"owner" (can be null), and "priority" (High/Medium/Low)\n'
+            '- "sentiment": Overall tone (Positive, Neutral, or Negative)\n\n'
+            f"Transcription:\n{text}\n\n"
+            "JSON Analysis:"
+        )
 
     def _extract_json(self, text: str) -> Dict[str, Any]:
         """Extract JSON from LLM response (handles markdown code blocks)."""
-        # Try to find JSON in markdown code blocks
-        json_match = re.search(r'```(?:json)?\s*({.*?})\s*```', text, re.DOTALL)
-        if json_match:
-            text = json_match.group(1)
-        
-        # Try to find raw JSON
-        json_match = re.search(r'{.*}', text, re.DOTALL)
-        if json_match:
-            text = json_match.group(0)
-        
-        # Parse
+        match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+        if match:
+            text = match.group(1)
+        else:
+            match = re.search(r"\{.*\}", text, re.DOTALL)
+            if match:
+                text = match.group(0)
+
         try:
             return json.loads(text)
         except json.JSONDecodeError:
-            # Fallback: try to extract fields manually
             logger.warning("Failed to parse JSON, attempting manual extraction")
             return self._manual_extract(text)
-    
+
     def _manual_extract(self, text: str) -> Dict[str, Any]:
-        """Fallback: manually extract fields from unstructured text."""
-        result = {
+        result: Dict[str, Any] = {
             "summary": "Unable to parse summary",
             "topics": [],
             "action_items": [],
-            "sentiment": "Neutral"
+            "sentiment": "Neutral",
         }
-        
-        # Try to extract summary
-        summary_match = re.search(r'summary["\']?\s*:\s*["\']([^"\']+)["\']', text, re.I)
-        if summary_match:
-            result["summary"] = summary_match.group(1)
-        
-        # Try to extract topics
-        topics_match = re.search(r'topics["\']?\s*:\s*\[(.*?)\]', text, re.I | re.DOTALL)
-        if topics_match:
-            topics_str = topics_match.group(1)
-            result["topics"] = [t.strip(' "\'') for t in topics_str.split(',')]
-        
-        # Try to extract sentiment
-        sentiment_match = re.search(r'sentiment["\']?\s*:\s*["\']?(\w+)["\']?', text, re.I)
-        if sentiment_match:
-            result["sentiment"] = sentiment_match.group(1)
-        
+        m = re.search(r'summary["\']?\s*:\s*["\']([^"\']+)["\']', text, re.I)
+        if m:
+            result["summary"] = m.group(1)
+        m = re.search(r'topics["\']?\s*:\s*\[(.*?)\]', text, re.I | re.DOTALL)
+        if m:
+            result["topics"] = [t.strip(' "\'') for t in m.group(1).split(",")]
+        m = re.search(r'sentiment["\']?\s*:\s*["\']?(\w+)["\']?', text, re.I)
+        if m:
+            result["sentiment"] = m.group(1)
         return result
-    
-    def _process_openai(self, text: str) -> Dict[str, Any]:
-        """Process with OpenAI API."""
-        system_message = {
-            "role": "system",
-            "content": "You are an expert meeting analyst. Always respond with valid JSON."
-        }
-        
-        user_message = {
-            "role": "user",
-            "content": self._build_prompt(text)
-        }
-        
-        response = self.openai_client.chat.completions.create(
-            model=self.openai_model,
-            messages=[system_message, user_message],
-            temperature=self.temperature
-        )
-        
-        content = response.choices[0].message.content
-        if not content:
-            raise ValueError("Empty response from OpenAI")
-        
-        return json.loads(content)
-    
-    def _process_local(self, text: str) -> Dict[str, Any]:
-        """Process with local HuggingFace model."""
-        prompt = self._build_prompt(text)
-        
-        # Generate
-        outputs = self.pipe(prompt, max_new_tokens=self.max_length)
-        generated_text = outputs[0]['generated_text']
-        
-        # Extract response (remove prompt)
-        response = generated_text[len(prompt):].strip()
-        
-        # Extract and parse JSON
-        return self._extract_json(response)
-    
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
     def process(self, text: str) -> Dict[str, Any]:
         """
-        Process transcription with automatic backend selection.
-        
-        Args:
-            text: Transcription text
-            
+        Analyze transcription text and return structured meeting analysis.
+
         Returns:
-            Dict with analysis results
+            Dict with keys: summary, topics, action_items, sentiment
         """
         try:
-            logger.info(f"Processing with {self.backend} backend...")
-            
-            if self.backend == "openai":
+            logger.info(f"Processing with backend: {self.backend}")
+
+            if self.backend == "ollama":
+                parsed = self._process_ollama(text)
+            elif self.backend == "openai":
                 parsed = self._process_openai(text)
             else:
                 parsed = self._process_local(text)
-            
-            # Validate with Pydantic
+
             validated = MeetingAnalysis(**parsed)
-            
             logger.info(f"✓ Analysis complete ({self.backend})")
             return validated.model_dump()
-            
+
         except ValidationError as e:
             logger.error(f"Validation failed: {e}")
-            return {
-                "error": f"Invalid response format: {str(e)}",
-                "backend": self.backend
-            }
+            return {"error": f"Invalid response format: {str(e)}", "backend": self.backend}
         except Exception as e:
             logger.error(f"Processing failed: {e}", exc_info=True)
-            return {
-                "error": str(e),
-                "backend": self.backend
-            }
-    
+            return {"error": str(e), "backend": self.backend}
+
     def get_backend_info(self) -> Dict[str, Any]:
-        """Get information about current backend."""
-        info = {
-            "backend": self.backend,
-            "device": self.device if self.backend == "local" else "cloud"
-        }
-        
-        if self.backend == "openai":
+        """Return a summary of the active backend configuration."""
+        info: Dict[str, Any] = {"backend": self.backend}
+
+        if self.backend == "ollama":
+            info["model"] = self.ollama_model
+            info["host"] = self.ollama_host
+            info["device"] = "local (Ollama)"
+        elif self.backend == "openai":
             info["model"] = self.openai_model
+            info["device"] = "cloud"
         else:
             info["model"] = self.local_model_name
-            
-            import torch
-            if torch.cuda.is_available():
-                info["vram_gb"] = torch.cuda.get_device_properties(0).total_memory / 1024**3
-        
+            info["device"] = self.device
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    info["vram_gb"] = round(
+                        torch.cuda.get_device_properties(0).total_memory / 1024 ** 3, 1
+                    )
+            except Exception:
+                pass
+
         return info
 
 

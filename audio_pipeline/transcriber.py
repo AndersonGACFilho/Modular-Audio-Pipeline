@@ -535,19 +535,6 @@ class FasterWhisperTranscriber(TranscriberProtocol):
             raise TranscriptionError(f"Transcription failed: {e}")
 
     def unload_model(self) -> None:
-         """Unload faster-whisper model to free memory."""
-         if hasattr(self, '_model') and self._model is not None:
-             try:
-                 # Attempt to delete model and free GPU memory
-                 del self._model
-             except Exception:
-                 pass
-             self._model = None
-             try:
-                 import torch
-                 if torch.cuda.is_available():
-                     torch.cuda.empty_cache()
-             except Exception:
-                 pass
-             logger.info("FasterWhisper model unloaded")
+        """Unload faster-whisper model to free memory."""
+        pass
 

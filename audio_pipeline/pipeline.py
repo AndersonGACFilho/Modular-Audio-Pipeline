@@ -180,30 +180,11 @@ class AudioPipeline:
         else:
             self.redundancy = NoOpRedundancyRemover()
 
-        # LLM Post-Processor
+        # LLM Post-Processor — intentionally NOT loaded here.
+        # It is initialized lazily inside run(), AFTER transcription and
+        # diarization models have been unloaded, to avoid VRAM exhaustion
+        # on GPUs with ≤ 8 GB of memory.
         self.llm_processor = None
-        if self.config.llm.enabled:
-            try:
-                from .post_processing_hybrid import HybridLLMPostProcessor
-
-                self.llm_processor = HybridLLMPostProcessor(
-                    device=self.config.llm.device,  # CORRECT: device
-                    max_length=self.config.llm.max_length,  # CORRECT: max_length
-                    temperature=self.config.llm.temperature,  # CORRECT: temperature
-                    force_local=not self.config.llm.use_openai  # CORRECT: invert use_openai
-                )
-
-                # Log backend info
-                info = self.llm_processor.get_backend_info()
-                logger.info(f"✓ LLM initialized: {info['backend']} ({info['model']})")
-
-            except ImportError as e:
-                logger.warning(f"LLM post-processing disabled: {e}")
-                logger.warning("Install with: pip install transformers torch openai instructor")
-                self.llm_processor = None
-            except Exception as e:
-                logger.error(f"Failed to initialize LLM: {e}")
-                self.llm_processor = None
 
         # Timestamp mappings
         self._timestamp_mappings: List[TimestampMapping] = []
@@ -415,7 +396,39 @@ class AudioPipeline:
                 final_segments = merger.merge(final_segments)
 
             # Step 11: LLM Post-Processing
+            # Unload transcription and diarization models first to free VRAM
+            # before loading the LLM (critical on GPUs with ≤ 8 GB VRAM).
             llm_analysis = None
+            if self.config.llm.enabled and self.llm_processor is None:
+                if hasattr(self.transcriber, 'unload_model'):
+                    logger.info("Unloading transcriber to free VRAM for LLM...")
+                    self.transcriber.unload_model()
+                if hasattr(self.diarizer, 'unload_model'):
+                    logger.info("Unloading diarizer to free VRAM for LLM...")
+                    self.diarizer.unload_model()
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                        import gc; gc.collect()
+
+                    from .post_processing_hybrid import HybridLLMPostProcessor
+                    self.llm_processor = HybridLLMPostProcessor(
+                        model=self.config.llm.openai_model,
+                        ollama_host=self.config.llm.ollama_host,
+                        ollama_model=self.config.llm.ollama_model,
+                        use_ollama=self.config.llm.use_ollama,
+                        device=self.config.llm.device,
+                        max_length=self.config.llm.max_length,
+                        temperature=self.config.llm.temperature,
+                        force_local=not self.config.llm.use_openai,
+                    )
+                    info = self.llm_processor.get_backend_info()
+                    logger.info(f"✓ LLM initialized: {info['backend']} ({info['model']})")
+                except Exception as e:
+                    logger.warning(f"LLM post-processing disabled: {e}")
+                    self.llm_processor = None
+
             if self.llm_processor:
                 try:
                     logger.info("Analyzing with LLM...")

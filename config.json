@@ -40,7 +40,7 @@
     "task": "transcribe",
     "temperature": 0.0,
     "beam_size": 5,
-    "prompt": "This recording contains a manager providing instructions in Portuguese. Transcribe the audio in Portuguese accurately, preserving punctuation and indicating any pauses or hesitations."
+    "prompt":  "É um contratante falando ao contratado quais os próximos passos para a realização de um serviço. O contratante é uma pessoa jurídica e o contratado é uma pessoa física. O contratante fala de forma clara, pausada e objetiva, dando instruções específicas sobre o serviço a ser realizado. O contratante também menciona prazos e requisitos que o contratado deve cumprir para garantir a satisfação do cliente final."
   },
 
   "diarization": {
@@ -62,9 +62,12 @@
 
   "llm": {
     "enabled": true,
+    "use_ollama": false,
+    "ollama_host": "http://localhost:11434",
+    "ollama_model": "qwen3.5:4b",
     "_comment": "Hybrid LLM: auto-selects OpenAI (if key exists) or local HuggingFace",
 
-    "use_openai": true,
+    "use_openai": false,
     "openai_model": "gpt-4o-mini",
 
     "local_model": null,

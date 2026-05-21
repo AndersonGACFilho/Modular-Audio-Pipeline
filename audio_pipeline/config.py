@@ -114,15 +114,23 @@ class SegmentMergingConfig:
 
 @dataclass
 class LLMConfig:
-    """LLM Post-Processing Configuration (Hybrid: OpenAI + Local)."""
+    """LLM Post-Processing Configuration (Hybrid: Ollama > OpenAI > Local HF)."""
     enabled: bool = False
-    use_openai: bool = True  # Try OpenAI first (if key exists)
+
+    # Ollama (checked first — runs out-of-process, no VRAM cost)
+    use_ollama: bool = True          # Probe for Ollama automatically
+    ollama_host: str = "http://localhost:11434"
+    ollama_model: Optional[str] = None  # Auto-select if None
+
+    # OpenAI (checked second)
+    use_openai: bool = True
     openai_model: str = "gpt-4o-mini"
-    local_model: Optional[str] = None  # Auto-select if None
+
+    # Local HuggingFace (final fallback)
+    local_model: Optional[str] = None  # Auto-select by VRAM if None
     device: str = "auto"
     max_length: int = 2048
     temperature: float = 0.3
-
 
 @dataclass
 class DiarizationConfig:
@@ -337,7 +345,6 @@ def get_default_config() -> PipelineConfig:
     """
     config = PipelineConfig()
 
-    # Use an English instructional prompt by default
     config.transcription.prompt = DEFAULT_PROMPTS["en_general"]
 
     return config
