@@ -16,34 +16,46 @@ A modular, production-ready Python pipeline for audio transcription with speaker
 ## Quick Start
 
 ```bash
+# Install dependencies (sync virtual environment from pyproject.toml)
+uv sync
+
 # Basic usage - process all files in ./files directory
-python main.py
+uv run python main.py
 
 # Process specific file
-python main.py --input recording.mp3
+uv run python main.py --input recording.mp3
 
 # Use English transcription
-python main.py --language en --model large-v3
+uv run python main.py --language en --model large-v3
 
 # Disable diarization for single speaker
-python main.py --no-diarization
+uv run python main.py --no-diarization
 ```
 
 ## Installation
 
-### Using Conda (Recommended)
+### Using uv (Recommended)
 
 ```bash
-conda env create -f environment.yml
-conda activate AudioPipeline
+# 1) Install uv (Windows PowerShell)
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+# 2) Ensure Python 3.11 is available for this project
+uv python install 3.11
+
+# 3) Create/update the project environment from lock-free manifests
+uv sync
 ```
 
-### Using pip
+### Optional: CPU-only setup
 
-```bash
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-pip install openai-whisper pyannote.audio demucs pydub noisereduce pyloudnorm webrtcvad-wheels
-```
+By default, this project is configured for PyTorch CUDA 12.1 wheels via the PyTorch index.
+If you need CPU-only execution, edit `pyproject.toml` and replace CUDA-specific torch pins.
+
+### Legacy Conda file
+
+`environment.yml` is kept temporarily as a fallback for existing environments.
+New setups should use `uv`.
 
 ### System Dependencies
 

@@ -100,6 +100,38 @@ class MediaHandler(MediaHandlerProtocol):
         if os.path.exists(self.temp_dir):
             shutil.rmtree(self.temp_dir)
         os.makedirs(self.temp_dir, exist_ok=True)
+
+    def _has_audio_stream(self, file_path: str) -> bool:
+        """Return True when FFprobe can read at least one audio stream."""
+        if not self._check_ffmpeg():
+            return True
+
+        cmd = [
+            'ffprobe',
+            '-v', 'error',
+            '-select_streams', 'a:0',
+            '-show_entries', 'stream=codec_type',
+            '-of', 'csv=p=0',
+            file_path
+        ]
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                timeout=30
+            )
+        except (subprocess.SubprocessError, FileNotFoundError) as e:
+            logger.warning(f"Could not validate media file {Path(file_path).name}: {e}")
+            return False
+
+        if result.returncode == 0 and result.stdout.decode(errors='replace').strip():
+            return True
+
+        stderr = result.stderr.decode(errors='replace').strip()
+        reason = stderr.splitlines()[-1] if stderr else "no audio stream found"
+        logger.warning(f"Skipping unreadable media file {Path(file_path).name}: {reason}")
+        return False
     
     def find_media_file(self) -> Tuple[str, bool]:
         """
@@ -122,7 +154,7 @@ class MediaHandler(MediaHandlerProtocol):
             
             ext = Path(fname).suffix.lower()
             
-            if ext in self.AUDIO_EXTENSIONS:
+            if ext in self.AUDIO_EXTENSIONS and self._has_audio_stream(full_path):
                 logger.info(f"Found audio file: {fname}")
                 return full_path, False
         
@@ -135,7 +167,7 @@ class MediaHandler(MediaHandlerProtocol):
             
             ext = Path(fname).suffix.lower()
             
-            if ext in self.VIDEO_EXTENSIONS:
+            if ext in self.VIDEO_EXTENSIONS and self._has_audio_stream(full_path):
                 logger.info(f"Found video file: {fname}")
                 return full_path, True
         
