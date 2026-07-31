@@ -32,6 +32,8 @@ from .protocols import (
     TimestampMapping
 )
 from .media_handler import MediaHandler
+from .documentation import archival_segments, documentation_text
+from .naming import contextual_output_stem, rename_derived_artifact, rename_source_media
 from .preprocessor import AudioPreprocessor
 from .segment_merger import SegmentMerger
 from .separator import VocalSeparator, NoOpVocalSeparator
@@ -491,6 +493,11 @@ class AudioPipeline:
             else:
                 metrics["stage_durations_s"]["timestamp_mapping"] = 0.0
 
+            # This archival representation is the canonical transcript. It is
+            # never passed through an LLM or a lossy redundancy filter.
+            archived_segments = archival_segments(aligned_segments)
+            metrics["segments"]["archival"] = len(archived_segments)
+
             # Step 9: Remove redundancies
             logger.info("Removing redundant segments...")
             final_segments = self._measure_stage(
@@ -561,8 +568,10 @@ class AudioPipeline:
             if self.llm_processor:
                 try:
                     logger.info("Analyzing with LLM...")
-                    full_text = " ".join([s["text"] for s in final_segments])
-                    llm_analysis = self.llm_processor.process(full_text)
+                    full_text = " ".join([s["text"] for s in archived_segments])
+                    llm_analysis = self.llm_processor.process(
+                        full_text, source_path=str(media_file)
+                    )
 
                     if "error" not in llm_analysis:
                         logger.info("✓ LLM analysis complete")
@@ -592,6 +601,41 @@ class AudioPipeline:
             }
             self._finalize_metrics(metrics, started_at)
 
+            formatting = (
+                llm_analysis.get("formatting")
+                if llm_analysis and "error" not in llm_analysis else None
+            )
+            output_stem = contextual_output_stem(str(media_file), formatting)
+            original_media_file = media_file
+            if formatting:
+                try:
+                    media_file = rename_source_media(media_file, output_stem)
+                    metrics["media"]["renamed_from"] = original_media_file
+                    metrics["media"]["renamed_to"] = media_file
+                except OSError as error:
+                    logger.warning("Could not rename source media for indexing: %s", error)
+                    metrics["media"]["rename_error"] = str(error)
+
+                generated_artifacts = (
+                    wav,
+                    denoised,
+                    vocals,
+                    norm,
+                    loudnorm,
+                    silence_removed,
+                    voiced_wav,
+                )
+                artifact_renames = []
+                for artifact in dict.fromkeys(generated_artifacts):
+                    try:
+                        renamed_artifact = rename_derived_artifact(artifact, base, output_stem)
+                        if renamed_artifact:
+                            artifact_renames.append({"from": artifact, "to": renamed_artifact})
+                    except OSError as error:
+                        logger.warning("Could not rename generated artifact %s: %s", artifact, error)
+                if artifact_renames:
+                    metrics["media"]["generated_artifact_renames"] = artifact_renames
+
             # Step 12: Save results and metrics
             output_data = {
                 "metadata": {
@@ -604,20 +648,24 @@ class AudioPipeline:
                     },
                     "metrics": metrics,
                 },
-                "segments": final_segments
+                "segments": archived_segments,
+                "documentation": {
+                    "fidelity": "verbatim_with_whitespace_normalization",
+                    "text": documentation_text(archived_segments),
+                },
             }
 
             if llm_analysis and "error" not in llm_analysis:
                 output_data["llm_analysis"] = llm_analysis
 
-            out_path = os.path.join(self.results_dir, f"{base}_transcription.json")
+            out_path = os.path.join(self.results_dir, f"{output_stem}_transcription.json")
             if os.path.exists(out_path):
                 with open(out_path, "r", encoding="utf-8") as existing_file:
                     existing_source = json.load(existing_file).get("metadata", {}).get("source_file")
                 if existing_source != str(media_file):
                     import hashlib
                     source_hash = hashlib.sha256(str(Path(media_file).resolve()).encode()).hexdigest()[:8]
-                    out_path = os.path.join(self.results_dir, f"{base}_{source_hash}_transcription.json")
+                    out_path = os.path.join(self.results_dir, f"{output_stem}_{source_hash}_transcription.json")
             serialization_started_at = time.perf_counter()
             with open(out_path, "w", encoding="utf-8") as f:
                 json.dump(output_data, f, ensure_ascii=False, indent=2)
@@ -634,7 +682,7 @@ class AudioPipeline:
                 success=True,
                 input_file=str(media_file),
                 output_file=out_path,
-                segments=final_segments,
+                segments=archived_segments,
                 llm_analysis=llm_analysis,
                 metadata={
                     "model": self.config.transcription.model,

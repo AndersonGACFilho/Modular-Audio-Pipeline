@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from typing import List, Optional, Dict, Any, Literal
 from pydantic import BaseModel, Field, ValidationError
+
+from .profiles import PROFILE_INSTRUCTIONS, ProfileRouter
 import os
 import json
 import logging
@@ -40,6 +42,10 @@ class MeetingAnalysis(BaseModel):
     topics: List[str] = Field(..., description="Main topics discussed")
     action_items: List[ActionItem] = Field(..., description="Extracted tasks")
     sentiment: str = Field(..., description="Overall tone: Positive, Neutral, or Negative")
+    profile_data: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Profile-specific structured data extracted from the meeting",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +134,7 @@ class HybridLLMPostProcessor:
         self.max_length = max_length
         self.temperature = temperature
         self._lazy_load = lazy_load
+        self.profile_router = ProfileRouter()
 
         self.api_key = os.getenv("OPENAI_API_KEY")
         self.backend: Literal["ollama", "openai", "local"] = "local"
@@ -215,7 +222,11 @@ class HybridLLMPostProcessor:
             return None
 
     def _process_ollama(
-        self, text: str, max_length: Optional[int] = None
+        self,
+        text: str,
+        max_length: Optional[int] = None,
+        user_prompt: Optional[str] = None,
+        response_model: type[BaseModel] = MeetingAnalysis,
     ) -> Dict[str, Any]:
         """Send request to Ollama /api/chat."""
         import urllib.request
@@ -225,7 +236,7 @@ class HybridLLMPostProcessor:
             "stream": False,
             "think": not self.disable_thinking,
             "keep_alive": self.ollama_keep_alive,
-            "format": MeetingAnalysis.model_json_schema(),
+            "format": response_model.model_json_schema(),
             "options": {
                 "temperature": self.temperature,
                 "num_predict": max_length or self.max_length,
@@ -239,7 +250,7 @@ class HybridLLMPostProcessor:
                         "Always respond with valid JSON and nothing else."
                     ),
                 },
-                {"role": "user", "content": self._build_prompt(text)},
+                {"role": "user", "content": user_prompt or self._build_prompt(text)},
             ],
         }
 
@@ -379,6 +390,8 @@ class HybridLLMPostProcessor:
     # ------------------------------------------------------------------
 
     def _build_prompt(self, text: str) -> str:
+        profile = getattr(self, "_active_profile", "generic_meeting")
+        profile_instruction = PROFILE_INSTRUCTIONS[profile]
         return (
             "You are an expert meeting analyst. Analyze the following transcription "
             "and extract key information.\n\n"
@@ -388,6 +401,9 @@ class HybridLLMPostProcessor:
             '- "action_items": A list of tasks, each with "description", '
             '"owner" (can be null), and "priority" (High/Medium/Low)\n'
             '- "sentiment": Overall tone (Positive, Neutral, or Negative)\n\n'
+            f"Formatting profile: {profile}\n"
+            f"Profile instructions: {profile_instruction}\n"
+            "Put profile-specific fields in `profile_data` using clear snake_case keys.\n\n"
             f"Transcription:\n{text}\n\n"
             "JSON Analysis:"
         )
@@ -456,6 +472,17 @@ class HybridLLMPostProcessor:
             return self._process_openai(text)
         return self._process_local(text)
 
+    def _classify_with_ollama(
+        self, prompt: str, response_model: type[BaseModel]
+    ) -> Dict[str, Any]:
+        """Adapter that lets ProfileRouter use Ollama without knowing its API."""
+        return self._process_ollama(
+            "",
+            max_length=180,
+            user_prompt=prompt,
+            response_model=response_model,
+        )
+
     def _consolidate_chunks(self, analyses: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Merge chunk analyses into one final meeting analysis."""
         source = json.dumps(analyses, ensure_ascii=False)
@@ -471,7 +498,7 @@ class HybridLLMPostProcessor:
             return self._process_openai(prompt)
         return self._process_local(prompt)
 
-    def process(self, text: str) -> Dict[str, Any]:
+    def process(self, text: str, source_path: Optional[str] = None) -> Dict[str, Any]:
         """
         Analyze transcription text and return structured meeting analysis.
 
@@ -480,6 +507,16 @@ class HybridLLMPostProcessor:
         """
         try:
             logger.info(f"Processing with backend: {self.backend}")
+            classifier = (
+                self._classify_with_ollama if self.backend == "ollama" else None
+            )
+            routing = self.profile_router.route(text, source_path, classifier)
+            self._active_profile = routing.profile
+            logger.info(
+                "Selected formatting profile: %s (confidence %.2f)",
+                routing.profile,
+                routing.confidence,
+            )
 
             chunks = self._split_text(text)
             if len(chunks) == 1:
@@ -494,7 +531,9 @@ class HybridLLMPostProcessor:
 
             validated = MeetingAnalysis(**parsed)
             logger.info(f"✓ Analysis complete ({self.backend})")
-            return validated.model_dump()
+            result = validated.model_dump()
+            result["formatting"] = routing.model_dump()
+            return result
 
         except ValidationError as e:
             logger.error(f"Validation failed: {e}")

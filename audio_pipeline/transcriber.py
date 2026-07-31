@@ -427,13 +427,17 @@ class FasterWhisperTranscriber(TranscriberProtocol):
     def _transcribe_with_model(self, input_wav: str):
         """Invoke the selected faster-whisper inference path consistently."""
         inference = self._inference or self._model
+        # BatchedInferencePipeline requires either VAD or explicit clip
+        # timestamps. The upstream Silero stage has already reduced silence,
+        # so this second pass is normally inexpensive and keeps batching valid.
+        use_vad_filter = self.internal_vad or self._inference is not None
         options = {
             "beam_size": self.beam_size,
             "language": self.language,
             "task": self.task,
             "temperature": self.temperature,
             "initial_prompt": self.prompt or None,
-            "vad_filter": self.internal_vad,
+            "vad_filter": use_vad_filter,
             "word_timestamps": self.word_timestamps,
         }
         if self._inference is not None:
