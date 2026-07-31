@@ -289,6 +289,7 @@ def main() -> int:
         Exit code (0 for success, 1 for error)
     """
     args = parse_args()
+    pipeline: Optional[AudioPipeline] = None
     
     # Configure logging level
     if args.debug:
@@ -313,20 +314,15 @@ def main() -> int:
         result = pipeline.run(input_file=args.input)
         
         if result.success:
-            logger.info(f"✓ Processing complete!")
+            logger.info("✓ Processing complete!")
             logger.info(f"  Input: {result.input_file}")
             logger.info(f"  Output: {result.output_file}")
             logger.info(f"  Segments: {len(result.segments)}")
-            
-            # Cleanup if requested
-            if not args.no_cleanup:
-                pipeline.cleanup()
-            
             return 0
         else:
             logger.error(f"✗ Processing failed: {result.error}")
             return 1
-            
+
     except ConfigurationError as e:
         logger.error(f"Configuration error: {e}")
         return 1
@@ -339,6 +335,9 @@ def main() -> int:
     except Exception as e:
         logger.exception(f"Unexpected error: {e}")
         return 1
+    finally:
+        if pipeline is not None and not args.no_cleanup:
+            pipeline.cleanup()
 
 
 if __name__ == "__main__":

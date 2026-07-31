@@ -536,5 +536,18 @@ class FasterWhisperTranscriber(TranscriberProtocol):
 
     def unload_model(self) -> None:
         """Unload faster-whisper model to free memory."""
-        pass
+        if self._model is None:
+            return
+
+        del self._model
+        self._model = None
+        import gc
+        gc.collect()
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            logger.debug("Unable to clear CUDA cache after unloading faster-whisper", exc_info=True)
+        logger.info("Faster-whisper model unloaded")
 

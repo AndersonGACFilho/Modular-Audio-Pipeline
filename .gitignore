@@ -28,6 +28,7 @@ hf_token.txt
 *.tmp
 *.temp
 *.bak
+.checkpoints/
 
 # Pycharm
 .idea

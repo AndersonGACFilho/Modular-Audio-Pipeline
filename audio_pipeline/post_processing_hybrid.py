@@ -2,12 +2,12 @@
 Hybrid LLM Post-Processor.
 
 Backend priority (auto-selected):
-  1. Ollama  — if running locally at OLLAMA_HOST (default: http://localhost:11434)
-  2. OpenAI  — if OPENAI_API_KEY is set
-  3. Local HuggingFace model — always available as final fallback
+  1. Ollama  - if running locally at OLLAMA_HOST (default: http://localhost:11434)
+  2. OpenAI  - if OPENAI_API_KEY is set
+  3. Local HuggingFace model - always available as final fallback
 
 Override via config:
-  llm.use_ollama   = true/false   (default: true  — probe automatically)
+  llm.use_ollama   = true/false   (default: true  - probe automatically)
   llm.ollama_model = "llama3"     (default: first available model on the server)
   llm.use_openai   = true/false
   llm.openai_model = "gpt-4o-mini"
@@ -49,7 +49,7 @@ class MeetingAnalysis(BaseModel):
 class HybridLLMPostProcessor:
     """
     Smart LLM processor that automatically selects the best available backend:
-      1. Ollama  (local server — zero in-process VRAM cost for the pipeline)
+      1. Ollama  (local server - zero in-process VRAM cost for the pipeline)
       2. OpenAI  (cloud API)
       3. Local HuggingFace model (downloaded on demand)
     """
@@ -75,6 +75,9 @@ class HybridLLMPostProcessor:
         ollama_host: Optional[str] = None,
         ollama_model: Optional[str] = None,
         use_ollama: bool = True,
+        use_openai: bool = True,
+        ollama_num_ctx: int = 8192,
+        ollama_keep_alive: str | int = "5m",
         # HuggingFace options
         local_model: Optional[str] = None,
         device: str = "auto",
@@ -105,7 +108,13 @@ class HybridLLMPostProcessor:
             ollama_host or os.getenv("OLLAMA_HOST", "http://localhost:11434")
         ).rstrip("/")
         self.ollama_model = ollama_model
+
         self.use_ollama = use_ollama
+        self.ollama_num_ctx = ollama_num_ctx
+        self.ollama_keep_alive = ollama_keep_alive
+
+        self.use_openai = use_openai
+
         self.local_model_name = local_model
         self.device = device
         self.max_length = max_length
@@ -124,7 +133,7 @@ class HybridLLMPostProcessor:
                 logger.info(f"✓ Ollama available → model: {self.ollama_model}")
                 return
 
-        if not force_local and self.api_key:
+        if not force_local and use_openai and self.api_key:
             self.backend = "openai"
             logger.info(f"Using OpenAI API: {self.openai_model}")
             self._init_openai()
@@ -173,7 +182,7 @@ class HybridLLMPostProcessor:
                 logger.info("Ollama is running but has no models pulled yet.")
                 return None
 
-            logger.info(f"Ollama available — models: {available}")
+            logger.info(f"Ollama available - models: {available}")
 
             # Honour caller-specified model
             if self.ollama_model:
@@ -204,9 +213,12 @@ class HybridLLMPostProcessor:
         payload = {
             "model": self.ollama_model,
             "stream": False,
+            "keep_alive": self.ollama_keep_alive,
+            "format": MeetingAnalysis.model_json_schema(),
             "options": {
                 "temperature": self.temperature,
                 "num_predict": self.max_length,
+                "num_ctx": self.ollama_num_ctx,
             },
             "messages": [
                 {
@@ -288,7 +300,7 @@ class HybridLLMPostProcessor:
             else:
                 return self.RECOMMENDED_HF_MODELS[2]
 
-        logger.info("No CUDA — using smallest HF model on CPU")
+        logger.info("No CUDA - using smallest HF model on CPU")
         return self.RECOMMENDED_HF_MODELS[2]
 
     def _init_local(self):
@@ -434,6 +446,22 @@ class HybridLLMPostProcessor:
         except Exception as e:
             logger.error(f"Processing failed: {e}", exc_info=True)
             return {"error": str(e), "backend": self.backend}
+
+    def unload_model(self) -> None:
+        """Release the in-process Hugging Face fallback model, if loaded."""
+        if self.backend != "local":
+            return
+        for attribute in ("pipe", "tokenizer", "model"):
+            if hasattr(self, attribute):
+                setattr(self, attribute, None)
+                import gc
+                gc.collect()
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                except Exception:
+                    logger.debug("Unable to clear CUDA cache after unloading local LLM", exc_info=True)
 
     def get_backend_info(self) -> Dict[str, Any]:
         """Return a summary of the active backend configuration."""

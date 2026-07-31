@@ -124,7 +124,7 @@ class AudioPipeline:
         # Setup checkpoint manager
         self.checkpoint_manager = None
         if self.config.checkpoint_enabled:
-            self.checkpoint_manager = CheckpointManager(self.temp_dir)
+            self.checkpoint_manager = CheckpointManager(self.config.checkpoint_dir)
 
         # Initialize components
         self.media = media_handler or MediaHandler.from_config(self.config)
@@ -221,6 +221,45 @@ class AudioPipeline:
                 return original_time
 
         return processed_time
+
+    def _release_audio_models(self) -> None:
+        """Release ASR and diarization models before LLM processing."""
+        for component_name, component in (("transcriber", self.transcriber), ("diarizer", self.diarizer)):
+            unload = getattr(component, "unload_model", None)
+            if unload:
+                logger.info(f"Unloading {component_name} to free VRAM for LLM...")
+                unload()
+        try:
+            import gc
+            import torch
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            logger.debug("Unable to clear CUDA cache after audio model unload", exc_info=True)
+
+    def _compose_timestamp_mappings(
+        self, outer: List[TimestampMapping], inner: List[TimestampMapping]
+    ) -> List[TimestampMapping]:
+        """Compose processed→intermediate and intermediate→original mappings."""
+        composed: List[TimestampMapping] = []
+        for inner_mapping in inner:
+            inner_duration = inner_mapping.original_end - inner_mapping.original_start
+            if inner_duration <= 0:
+                continue
+            for outer_mapping in outer:
+                start = max(inner_mapping.original_start, outer_mapping.processed_start)
+                end = min(inner_mapping.original_end, outer_mapping.processed_end)
+                if end <= start:
+                    continue
+                processed_duration = inner_mapping.processed_end - inner_mapping.processed_start
+                processed_start = inner_mapping.processed_start + (start - inner_mapping.original_start) / inner_duration * processed_duration
+                processed_end = inner_mapping.processed_start + (end - inner_mapping.original_start) / inner_duration * processed_duration
+                outer_duration = outer_mapping.processed_end - outer_mapping.processed_start
+                original_start = outer_mapping.original_start + (start - outer_mapping.processed_start) / outer_duration * (outer_mapping.original_end - outer_mapping.original_start)
+                original_end = outer_mapping.original_start + (end - outer_mapping.processed_start) / outer_duration * (outer_mapping.original_end - outer_mapping.original_start)
+                composed.append(TimestampMapping(processed_start, processed_end, original_start, original_end))
+        return composed
 
     def _align_transcription_with_speakers(
         self,
@@ -344,7 +383,7 @@ class AudioPipeline:
                     silence_removed, self.results_dir
                 )
                 if self.config.preserve_timestamps:
-                    all_mappings.extend(vad_mappings)
+                    all_mappings = self._compose_timestamp_mappings(all_mappings, vad_mappings)
             else:
                 voiced_wav = silence_removed
 
@@ -399,7 +438,10 @@ class AudioPipeline:
             # Unload transcription and diarization models first to free VRAM
             # before loading the LLM (critical on GPUs with ≤ 8 GB VRAM).
             llm_analysis = None
-            if self.config.llm.enabled and self.llm_processor is None:
+            if self.config.llm.enabled:
+                if self.llm_processor and hasattr(self.llm_processor, "unload_model"):
+                    self.llm_processor.unload_model()
+                self.llm_processor = None
                 if hasattr(self.transcriber, 'unload_model'):
                     logger.info("Unloading transcriber to free VRAM for LLM...")
                     self.transcriber.unload_model()
@@ -418,10 +460,14 @@ class AudioPipeline:
                         ollama_host=self.config.llm.ollama_host,
                         ollama_model=self.config.llm.ollama_model,
                         use_ollama=self.config.llm.use_ollama,
+                        use_openai=self.config.llm.use_openai,
+                        ollama_num_ctx=self.config.llm.ollama_num_ctx,
+                        ollama_keep_alive=self.config.llm.ollama_keep_alive,
+                        local_model=self.config.llm.local_model,
                         device=self.config.llm.device,
                         max_length=self.config.llm.max_length,
                         temperature=self.config.llm.temperature,
-                        force_local=not self.config.llm.use_openai,
+                        lazy_load=True,
                     )
                     info = self.llm_processor.get_backend_info()
                     logger.info(f"✓ LLM initialized: {info['backend']} ({info['model']})")
@@ -465,6 +511,13 @@ class AudioPipeline:
                 output_data["llm_analysis"] = llm_analysis
 
             out_path = os.path.join(self.results_dir, f"{base}_transcription.json")
+            if os.path.exists(out_path):
+                with open(out_path, "r", encoding="utf-8") as existing_file:
+                    existing_source = json.load(existing_file).get("metadata", {}).get("source_file")
+                if existing_source != str(media_file):
+                    import hashlib
+                    source_hash = hashlib.sha256(str(Path(media_file).resolve()).encode()).hexdigest()[:8]
+                    out_path = os.path.join(self.results_dir, f"{base}_{source_hash}_transcription.json")
             with open(out_path, "w", encoding="utf-8") as f:
                 json.dump(output_data, f, ensure_ascii=False, indent=2)
 
@@ -535,7 +588,7 @@ class AudioPipeline:
                 error=str(e)
             )
 
-    def cleanup(self) -> None:
+    def cleanup(self, remove_temp: bool = True, clear_checkpoints: bool = False) -> None:
         """Cleanup temporary files and unload models."""
         import shutil
 
@@ -547,11 +600,12 @@ class AudioPipeline:
         if hasattr(self.diarizer, 'unload_model'):
             self.diarizer.unload_model()
 
-        # Clear checkpoint cache
-        if self.checkpoint_manager:
+        # Clear checkpoint cache only when explicitly requested. Checkpoints
+        # live outside the temporary directory so they can support resuming.
+        if clear_checkpoints and self.checkpoint_manager:
             self.checkpoint_manager.clear()
 
         # Remove temp directory
-        if os.path.exists(self.temp_dir):
+        if remove_temp and os.path.exists(self.temp_dir):
             shutil.rmtree(self.temp_dir)
             logger.info(f"✓ Cleaned up temp directory: {self.temp_dir}")

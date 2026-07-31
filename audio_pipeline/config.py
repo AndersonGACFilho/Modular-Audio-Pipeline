@@ -11,7 +11,7 @@ Sphinx autodoc or pydoc can extract structured documentation.
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Union
 import os
 import json
 import logging
@@ -121,6 +121,8 @@ class LLMConfig:
     use_ollama: bool = True          # Probe for Ollama automatically
     ollama_host: str = "http://localhost:11434"
     ollama_model: Optional[str] = None  # Auto-select if None
+    ollama_num_ctx: int = 8192
+    ollama_keep_alive: Union[str, int] = "5m"
 
     # OpenAI (checked second)
     use_openai: bool = True
@@ -165,6 +167,7 @@ class PipelineConfig:
     media_dir: str = "./files"
     temp_dir: Optional[str] = None  # Auto-generated if not set
     results_dir: Optional[str] = None  # Auto-generated if not set
+    checkpoint_dir: Optional[str] = None  # Persistent; never shares the temp directory
 
     # Sub-configurations
     audio: AudioConfig = field(default_factory=AudioConfig)
@@ -198,6 +201,11 @@ class PipelineConfig:
         else:
             self.results_dir = str(Path(self.results_dir).resolve())
 
+        if self.checkpoint_dir is None:
+            self.checkpoint_dir = str(Path(self.media_dir) / ".checkpoints")
+        else:
+            self.checkpoint_dir = str(Path(self.checkpoint_dir).resolve())
+
     def validate(self) -> None:
         """Validate configuration values."""
         errors = []
@@ -229,6 +237,21 @@ class PipelineConfig:
         if not 0 <= self.redundancy.similarity_threshold <= 1:
             errors.append("Similarity threshold must be 0-1")
 
+        if self.segment_merging.max_gap_s < 0:
+            errors.append("Segment merging max gap must be non-negative")
+        if self.subprocess_timeout_s <= 0:
+            errors.append("Subprocess timeout must be positive")
+        if self.llm.max_length < 1:
+            errors.append("LLM max length must be at least 1")
+        if self.llm.ollama_num_ctx < 4:
+            errors.append("Ollama context length must be at least 4")
+        if self.transcription.backend not in ["faster-whisper", "whisper", "openai-whisper", "openai"]:
+            errors.append(f"Unsupported transcription backend: {self.transcription.backend}")
+        if self.vad.provider not in ["webrtc", "silero"]:
+            errors.append(f"Unsupported VAD provider: {self.vad.provider}")
+        if self.diarization.min_speakers < 1:
+            errors.append("min_speakers must be at least 1")
+
         if errors:
             raise ConfigurationError(
                 "Configuration validation failed",
@@ -245,7 +268,7 @@ class PipelineConfig:
         config = cls()
 
         # Simple fields
-        for key in ["media_dir", "temp_dir", "results_dir", "preserve_timestamps",
+        for key in ["media_dir", "temp_dir", "results_dir", "checkpoint_dir", "preserve_timestamps",
                     "subprocess_timeout_s", "lazy_load_models", "checkpoint_enabled"]:
             if key in data:
                 setattr(config, key, data[key])
