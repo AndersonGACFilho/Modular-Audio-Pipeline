@@ -104,6 +104,8 @@ class TranscriptionConfig:
     beam_size: int = 5
     prompt: Optional[str] = None
     batch_size: int = 16
+    word_timestamps: bool = False
+    internal_vad: bool = False
 
 @dataclass
 class SegmentMergingConfig:
@@ -133,6 +135,10 @@ class LLMConfig:
     device: str = "auto"
     max_length: int = 2048
     temperature: float = 0.3
+    request_timeout_s: int = 900
+    chunk_size_chars: int = 6_000
+    chunk_max_length: int = 512
+    disable_thinking: bool = True
 
 @dataclass
 class DiarizationConfig:
@@ -245,6 +251,14 @@ class PipelineConfig:
             errors.append("LLM max length must be at least 1")
         if self.llm.ollama_num_ctx < 4:
             errors.append("Ollama context length must be at least 4")
+        if self.llm.request_timeout_s <= 0:
+            errors.append("LLM request timeout must be positive")
+        if self.llm.chunk_size_chars < 500:
+            errors.append("LLM chunk size must be at least 500 characters")
+        if self.llm.chunk_max_length < 1:
+            errors.append("LLM chunk max length must be at least 1")
+        if self.transcription.batch_size < 1:
+            errors.append("Transcription batch size must be at least 1")
         if self.transcription.backend not in ["faster-whisper", "whisper", "openai-whisper", "openai"]:
             errors.append(f"Unsupported transcription backend: {self.transcription.backend}")
         if self.vad.provider not in ["webrtc", "silero"]:

@@ -78,6 +78,10 @@ class HybridLLMPostProcessor:
         use_openai: bool = True,
         ollama_num_ctx: int = 8192,
         ollama_keep_alive: str | int = "5m",
+        request_timeout_s: int = 900,
+        chunk_size_chars: int = 6_000,
+        chunk_max_length: int = 512,
+        disable_thinking: bool = True,
         # HuggingFace options
         local_model: Optional[str] = None,
         device: str = "auto",
@@ -112,6 +116,10 @@ class HybridLLMPostProcessor:
         self.use_ollama = use_ollama
         self.ollama_num_ctx = ollama_num_ctx
         self.ollama_keep_alive = ollama_keep_alive
+        self.request_timeout_s = request_timeout_s
+        self.chunk_size_chars = chunk_size_chars
+        self.chunk_max_length = chunk_max_length
+        self.disable_thinking = disable_thinking
 
         self.use_openai = use_openai
 
@@ -206,18 +214,21 @@ class HybridLLMPostProcessor:
             logger.debug(f"Ollama probe failed: {e}")
             return None
 
-    def _process_ollama(self, text: str) -> Dict[str, Any]:
+    def _process_ollama(
+        self, text: str, max_length: Optional[int] = None
+    ) -> Dict[str, Any]:
         """Send request to Ollama /api/chat."""
         import urllib.request
 
         payload = {
             "model": self.ollama_model,
             "stream": False,
+            "think": not self.disable_thinking,
             "keep_alive": self.ollama_keep_alive,
             "format": MeetingAnalysis.model_json_schema(),
             "options": {
                 "temperature": self.temperature,
-                "num_predict": self.max_length,
+                "num_predict": max_length or self.max_length,
                 "num_ctx": self.ollama_num_ctx,
             },
             "messages": [
@@ -240,7 +251,7 @@ class HybridLLMPostProcessor:
             method="POST",
         )
 
-        with urllib.request.urlopen(req, timeout=300) as resp:
+        with urllib.request.urlopen(req, timeout=self.request_timeout_s) as resp:
             result = json.loads(resp.read().decode())
 
         content = result.get("message", {}).get("content", "")
@@ -419,6 +430,47 @@ class HybridLLMPostProcessor:
     # Public API
     # ------------------------------------------------------------------
 
+    def _split_text(self, text: str) -> List[str]:
+        """Split long text at word boundaries for bounded LLM requests."""
+        if len(text) <= self.chunk_size_chars:
+            return [text]
+
+        chunks = []
+        remaining = text.strip()
+        while remaining:
+            if len(remaining) <= self.chunk_size_chars:
+                chunks.append(remaining)
+                break
+            split_at = remaining.rfind(" ", 0, self.chunk_size_chars)
+            if split_at <= 0:
+                split_at = self.chunk_size_chars
+            chunks.append(remaining[:split_at])
+            remaining = remaining[split_at:].lstrip()
+        return chunks
+
+    def _process_chunk(self, text: str) -> Dict[str, Any]:
+        """Analyze one bounded text chunk with the active backend."""
+        if self.backend == "ollama":
+            return self._process_ollama(text, max_length=self.chunk_max_length)
+        if self.backend == "openai":
+            return self._process_openai(text)
+        return self._process_local(text)
+
+    def _consolidate_chunks(self, analyses: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Merge chunk analyses into one final meeting analysis."""
+        source = json.dumps(analyses, ensure_ascii=False)
+        prompt = (
+            "Consolidate the following partial meeting analyses into one final "
+            "analysis. Deduplicate topics and action items, preserve owners and "
+            "priorities, and return only the required JSON schema.\n\n"
+            f"Partial analyses:\n{source}"
+        )
+        if self.backend == "ollama":
+            return self._process_ollama(prompt, max_length=self.max_length)
+        if self.backend == "openai":
+            return self._process_openai(prompt)
+        return self._process_local(prompt)
+
     def process(self, text: str) -> Dict[str, Any]:
         """
         Analyze transcription text and return structured meeting analysis.
@@ -429,12 +481,16 @@ class HybridLLMPostProcessor:
         try:
             logger.info(f"Processing with backend: {self.backend}")
 
-            if self.backend == "ollama":
-                parsed = self._process_ollama(text)
-            elif self.backend == "openai":
-                parsed = self._process_openai(text)
+            chunks = self._split_text(text)
+            if len(chunks) == 1:
+                parsed = self._process_chunk(chunks[0])
             else:
-                parsed = self._process_local(text)
+                logger.info("Analyzing transcription in %d chunks", len(chunks))
+                partials = [
+                    MeetingAnalysis(**self._process_chunk(chunk)).model_dump()
+                    for chunk in chunks
+                ]
+                parsed = self._consolidate_chunks(partials)
 
             validated = MeetingAnalysis(**parsed)
             logger.info(f"✓ Analysis complete ({self.backend})")

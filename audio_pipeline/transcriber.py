@@ -37,9 +37,10 @@ logger = logging.getLogger(__name__)
 __all__ = ["WhisperTranscriber", "FasterWhisperTranscriber"]
 
 try:
-    from faster_whisper import WhisperModel
+    from faster_whisper import BatchedInferencePipeline, WhisperModel
 except ImportError:
     WhisperModel = None
+    BatchedInferencePipeline = None
 
 class WhisperTranscriber(TranscriberProtocol):
     """Wrapper around OpenAI's ``whisper`` package.
@@ -304,6 +305,12 @@ class FasterWhisperTranscriber(TranscriberProtocol):
         compute_type: str = "float16",
         beam_size: int = 5,
         language: str = "pt",
+        task: str = "transcribe",
+        prompt: str = "",
+        temperature: float = 0.0,
+        batch_size: int = 1,
+        word_timestamps: bool = False,
+        internal_vad: bool = False,
         lazy_load: bool = True
     ):
         self.model_name = model_name
@@ -311,7 +318,14 @@ class FasterWhisperTranscriber(TranscriberProtocol):
         self.compute_type = compute_type
         self.beam_size = beam_size
         self.language = language
+        self.task = task
+        self.prompt = prompt
+        self.temperature = temperature
+        self.batch_size = batch_size
+        self.word_timestamps = word_timestamps
+        self.internal_vad = internal_vad
         self._model = None
+        self._inference = None
 
         if self.device == "cuda" and not torch.cuda.is_available():
             logger.warning("CUDA not found. Reverting to CPU (int8).")
@@ -339,7 +353,16 @@ class FasterWhisperTranscriber(TranscriberProtocol):
             model_name=config.transcription.model,
             device=config.transcription.device,
             compute_type=config.transcription.compute_type,
+            beam_size=config.transcription.beam_size,
             language=config.transcription.language,
+            task=config.transcription.task,
+            prompt=config.transcription.prompt or "",
+            temperature=config.transcription.temperature,
+            batch_size=config.transcription.batch_size,
+            word_timestamps=config.transcription.word_timestamps,
+            internal_vad=(
+                config.transcription.internal_vad or not config.vad.enabled
+            ),
             lazy_load=config.lazy_load_models
         )
 
@@ -364,6 +387,9 @@ class FasterWhisperTranscriber(TranscriberProtocol):
                 device=self.device,
                 compute_type=self.compute_type
             )
+            if self.batch_size > 1 and BatchedInferencePipeline is not None:
+                self._inference = BatchedInferencePipeline(model=self._model)
+                logger.info("Using batched faster-whisper inference (batch_size=%d)", self.batch_size)
         except Exception as e:
             # Try to fallback to CPU if GPU load failed (common on misconfigured Windows/CUDA)
             logger.warning(
@@ -381,6 +407,8 @@ class FasterWhisperTranscriber(TranscriberProtocol):
                     device=self.device,
                     compute_type=self.compute_type
                 )
+                if self.batch_size > 1 and BatchedInferencePipeline is not None:
+                    self._inference = BatchedInferencePipeline(model=self._model)
                 logger.info("Loaded faster-whisper on CPU successfully")
             except Exception as e2:
                 # If CPU fallback fails, raise original error context
@@ -395,6 +423,22 @@ class FasterWhisperTranscriber(TranscriberProtocol):
             True if loaded.
         """
         return self._model is not None
+
+    def _transcribe_with_model(self, input_wav: str):
+        """Invoke the selected faster-whisper inference path consistently."""
+        inference = self._inference or self._model
+        options = {
+            "beam_size": self.beam_size,
+            "language": self.language,
+            "task": self.task,
+            "temperature": self.temperature,
+            "initial_prompt": self.prompt or None,
+            "vad_filter": self.internal_vad,
+            "word_timestamps": self.word_timestamps,
+        }
+        if self._inference is not None:
+            options["batch_size"] = self.batch_size
+        return inference.transcribe(input_wav, **options)
 
     def transcribe(self, input_wav: str) -> Dict[str, Any]:
         """Transcribe an audio file using the faster-whisper backend.
@@ -418,13 +462,7 @@ class FasterWhisperTranscriber(TranscriberProtocol):
 
         try:
             logger.info(f"Transcribing (Optimized): {input_wav}")
-            segments_gen, info = self._model.transcribe(
-                input_wav,
-                beam_size=self.beam_size,
-                language=self.language,
-                vad_filter=True, # Built-in Silero VAD
-                word_timestamps=True
-            )
+            segments_gen, info = self._transcribe_with_model(input_wav)
 
             segments = list(segments_gen)
             processed_segments = []
@@ -467,13 +505,7 @@ class FasterWhisperTranscriber(TranscriberProtocol):
 
                     # Retry transcription once on CPU
                     logger.info("Retrying transcription on CPU (int8)...")
-                    segments_gen, info = self._model.transcribe(
-                        input_wav,
-                        beam_size=self.beam_size,
-                        language=self.language,
-                        vad_filter=True,
-                        word_timestamps=True
-                    )
+                    segments_gen, info = self._transcribe_with_model(input_wav)
 
                     segments = list(segments_gen)
                     processed_segments = []
@@ -541,6 +573,7 @@ class FasterWhisperTranscriber(TranscriberProtocol):
 
         del self._model
         self._model = None
+        self._inference = None
         import gc
         gc.collect()
         try:

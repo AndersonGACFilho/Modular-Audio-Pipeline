@@ -15,8 +15,9 @@ dependency injection for testing and customization.
 import os
 import json
 import logging
+import time
 from pathlib import Path
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Callable
 from dataclasses import dataclass
 
 from .protocols import (
@@ -40,7 +41,7 @@ from .diarizer import SpeakerDiarizer, NoOpDiarizer
 from .redundancy import RedundancyRemover, NoOpRedundancyRemover
 from .config import PipelineConfig, get_default_config
 from .exceptions import AudioPipelineError, MediaNotFoundError
-from .utils import CheckpointManager, ensure_directory
+from .utils import CheckpointManager, ensure_directory, get_audio_duration
 
 logger = logging.getLogger(__name__)
 
@@ -311,6 +312,23 @@ class AudioPipeline:
 
         return aligned
 
+    def _measure_stage(
+        self, metrics: Dict[str, Any], name: str, operation: Callable[[], Any]
+    ) -> Any:
+        """Run an operation and record its elapsed wall-clock duration."""
+        started_at = time.perf_counter()
+        try:
+            return operation()
+        finally:
+            metrics["stage_durations_s"][name] = round(
+                time.perf_counter() - started_at, 3
+            )
+
+    @staticmethod
+    def _finalize_metrics(metrics: Dict[str, Any], started_at: float) -> Dict[str, Any]:
+        metrics["total_duration_s"] = round(time.perf_counter() - started_at, 3)
+        return metrics
+
     def run(self, input_file: Optional[str] = None) -> PipelineResult:
         """Execute the full audio processing pipeline.
 
@@ -327,22 +345,38 @@ class AudioPipeline:
             Result object containing success flag, output path, segments and
             optional error information.
         """
+        started_at = time.perf_counter()
+        metrics: Dict[str, Any] = {"stage_durations_s": {}, "media": {}, "segments": {}}
+
         try:
             # Step 1: Find media file
             if input_file:
-                media_file, is_video = self.media.find_specific_file(input_file)
+                media_file, is_video = self._measure_stage(
+                    metrics, "media_discovery", lambda: self.media.find_specific_file(input_file)
+                )
             else:
-                media_file, is_video = self.media.find_media_file()
+                media_file, is_video = self._measure_stage(
+                    metrics, "media_discovery", self.media.find_media_file
+                )
 
             base = Path(media_file).stem
             logger.info(f"Processing: {media_file}")
+            source_info = self.media.get_media_info(media_file)
+            metrics["media"] = {
+                "input_size_bytes": os.path.getsize(media_file),
+                "source_duration_s": source_info.get("duration"),
+                "source_format": Path(media_file).suffix.lower(),
+            }
 
             # Step 2: Convert to WAV
             ext = Path(media_file).suffix.lower()
             if is_video or ext != '.wav':
-                wav = self.media.convert_to_wav(media_file)
+                wav = self._measure_stage(
+                    metrics, "media_conversion", lambda: self.media.convert_to_wav(media_file)
+                )
             else:
                 wav = media_file
+                metrics["stage_durations_s"]["media_conversion"] = 0.0
 
             # Step 3: Preprocess
             all_mappings: List[TimestampMapping] = []
@@ -350,69 +384,99 @@ class AudioPipeline:
             # Noise reduction
             if self.config.noise_reduction.enabled:
                 logger.info("Reducing noise...")
-                denoised = self.preprocessor.reduce_stationary_noise(wav)
+                denoised = self._measure_stage(
+                    metrics, "noise_reduction", lambda: self.preprocessor.reduce_stationary_noise(wav)
+                )
             else:
                 denoised = wav
+                metrics["stage_durations_s"]["noise_reduction"] = 0.0
 
             # Vocal separation
             if self.config.vocal_separation.enabled or self.config.vocal_separation.auto_detect:
                 logger.info("Checking if vocal separation needed...")
-                vocals = self.separator.extract_vocals(denoised)
+                vocals = self._measure_stage(
+                    metrics, "vocal_separation", lambda: self.separator.extract_vocals(denoised)
+                )
             else:
                 vocals = denoised
+                metrics["stage_durations_s"]["vocal_separation"] = 0.0
 
             # Normalization
             logger.info("Normalizing audio...")
-            norm = self.preprocessor.normalize_audio(vocals)
-            loudnorm = self.preprocessor.normalize_loudness(norm)
+            norm = self._measure_stage(
+                metrics, "peak_normalization", lambda: self.preprocessor.normalize_audio(vocals)
+            )
+            loudnorm = self._measure_stage(
+                metrics, "loudness_normalization", lambda: self.preprocessor.normalize_loudness(norm)
+            )
 
             # Silence removal
             if self.config.preserve_timestamps:
                 logger.info("Removing silence (preserving timestamps)...")
-                silence_removed, silence_mappings = self.preprocessor.remove_silence(
-                    loudnorm, preserve_timestamps=True
+                silence_removed, silence_mappings = self._measure_stage(
+                    metrics, "silence_removal", lambda: self.preprocessor.remove_silence(
+                        loudnorm, preserve_timestamps=True
+                    )
                 )
                 all_mappings.extend(silence_mappings)
             else:
-                silence_removed, _ = self.preprocessor.remove_silence(loudnorm)
+                silence_removed, _ = self._measure_stage(
+                    metrics, "silence_removal", lambda: self.preprocessor.remove_silence(loudnorm)
+                )
 
             # Step 4: VAD
             if self.config.vad.enabled:
                 logger.info(f"Applying VAD ({self.config.vad.provider})...")
-                voiced_wav, vad_mappings = self.vad.filter_voice(
-                    silence_removed, self.results_dir
+                voiced_wav, vad_mappings = self._measure_stage(
+                    metrics, "voice_activity_detection", lambda: self.vad.filter_voice(
+                        silence_removed, self.results_dir
+                    )
                 )
                 if self.config.preserve_timestamps:
                     all_mappings = self._compose_timestamp_mappings(all_mappings, vad_mappings)
             else:
                 voiced_wav = silence_removed
+                metrics["stage_durations_s"]["voice_activity_detection"] = 0.0
+
+            metrics["media"]["post_silence_duration_s"] = round(get_audio_duration(silence_removed), 3)
+            metrics["media"]["post_vad_duration_s"] = round(get_audio_duration(voiced_wav), 3)
 
             # Step 5: Transcribe
             logger.info(f"Transcribing ({self.config.transcription.backend})...")
-            transcription_result = self.transcriber.transcribe(voiced_wav)
+            transcription_result = self._measure_stage(
+                metrics, "transcription", lambda: self.transcriber.transcribe(voiced_wav)
+            )
             raw_segments = transcription_result.get("segments", [])
+            metrics["segments"]["transcribed"] = len(raw_segments)
             logger.info(f"✓ Transcribed {len(raw_segments)} segments")
 
             # Step 6: Diarize
             if self.config.diarization.enabled:
                 logger.info("Diarizing speakers...")
-                diarization_segments = self.diarizer.diarize(
-                    voiced_wav,
-                    min_speakers=self.config.diarization.min_speakers,
-                    max_speakers=self.config.diarization.max_speakers
+                diarization_segments = self._measure_stage(
+                    metrics, "diarization", lambda: self.diarizer.diarize(
+                        voiced_wav,
+                        min_speakers=self.config.diarization.min_speakers,
+                        max_speakers=self.config.diarization.max_speakers
+                    )
                 )
             else:
                 diarization_segments = []
+                metrics["stage_durations_s"]["diarization"] = 0.0
 
             # Step 7: Align
             logger.info("Aligning transcription with speakers...")
-            aligned_segments = self._align_transcription_with_speakers(
-                raw_segments, diarization_segments
+            aligned_segments = self._measure_stage(
+                metrics, "speaker_alignment", lambda: self._align_transcription_with_speakers(
+                    raw_segments, diarization_segments
+                )
             )
+            metrics["segments"]["aligned"] = len(aligned_segments)
 
             # Step 8: Map timestamps
             if self.config.preserve_timestamps and all_mappings:
                 logger.info("Mapping timestamps to original audio...")
+                mapping_started_at = time.perf_counter()
                 for seg in aligned_segments:
                     seg["original_start"] = self._map_timestamp_to_original(
                         seg["start"], all_mappings
@@ -420,10 +484,19 @@ class AudioPipeline:
                     seg["original_end"] = self._map_timestamp_to_original(
                         seg["end"], all_mappings
                     )
+                metrics["stage_durations_s"]["timestamp_mapping"] = round(
+                    time.perf_counter() - mapping_started_at, 3
+                )
+                metrics["timestamp_mappings"] = len(all_mappings)
+            else:
+                metrics["stage_durations_s"]["timestamp_mapping"] = 0.0
 
             # Step 9: Remove redundancies
             logger.info("Removing redundant segments...")
-            final_segments = self.redundancy.remove(aligned_segments)
+            final_segments = self._measure_stage(
+                metrics, "redundancy_removal", lambda: self.redundancy.remove(aligned_segments)
+            )
+            metrics["segments"]["after_redundancy_removal"] = len(final_segments)
             logger.info(f"✓ Final: {len(final_segments)} segments")
 
             # Step 10: Merge short segments if needed
@@ -432,12 +505,18 @@ class AudioPipeline:
                 merger = SegmentMerger(
                     max_gap_s=self.config.segment_merging.max_gap_s
                 )
-                final_segments = merger.merge(final_segments)
+                final_segments = self._measure_stage(
+                    metrics, "segment_merging", lambda: merger.merge(final_segments)
+                )
+            else:
+                metrics["stage_durations_s"]["segment_merging"] = 0.0
+            metrics["segments"]["final"] = len(final_segments)
 
             # Step 11: LLM Post-Processing
             # Unload transcription and diarization models first to free VRAM
             # before loading the LLM (critical on GPUs with ≤ 8 GB VRAM).
             llm_analysis = None
+            llm_started_at = time.perf_counter()
             if self.config.llm.enabled:
                 if self.llm_processor and hasattr(self.llm_processor, "unload_model"):
                     self.llm_processor.unload_model()
@@ -463,6 +542,10 @@ class AudioPipeline:
                         use_openai=self.config.llm.use_openai,
                         ollama_num_ctx=self.config.llm.ollama_num_ctx,
                         ollama_keep_alive=self.config.llm.ollama_keep_alive,
+                        request_timeout_s=self.config.llm.request_timeout_s,
+                        chunk_size_chars=self.config.llm.chunk_size_chars,
+                        chunk_max_length=self.config.llm.chunk_max_length,
+                        disable_thinking=self.config.llm.disable_thinking,
                         local_model=self.config.llm.local_model,
                         device=self.config.llm.device,
                         max_length=self.config.llm.max_length,
@@ -493,7 +576,23 @@ class AudioPipeline:
                     logger.warning(f"LLM processing failed: {e}")
                     llm_analysis = {"error": str(e)}
 
-            # Step 11: Save results
+            metrics["stage_durations_s"]["llm_post_processing"] = round(
+                time.perf_counter() - llm_started_at, 3
+            )
+            metrics["llm"] = {
+                "enabled": self.config.llm.enabled,
+                "backend": (
+                    self.llm_processor.get_backend_info().get("backend")
+                    if self.llm_processor else None
+                ),
+                "status": (
+                    "success" if llm_analysis and "error" not in llm_analysis
+                    else "failed" if llm_analysis else "skipped"
+                ),
+            }
+            self._finalize_metrics(metrics, started_at)
+
+            # Step 12: Save results and metrics
             output_data = {
                 "metadata": {
                     "source_file": str(media_file),
@@ -502,7 +601,8 @@ class AudioPipeline:
                         "language": self.config.transcription.language,
                         "vad_provider": self.config.vad.provider,
                         "transcription_backend": self.config.transcription.backend,
-                    }
+                    },
+                    "metrics": metrics,
                 },
                 "segments": final_segments
             }
@@ -518,6 +618,13 @@ class AudioPipeline:
                     import hashlib
                     source_hash = hashlib.sha256(str(Path(media_file).resolve()).encode()).hexdigest()[:8]
                     out_path = os.path.join(self.results_dir, f"{base}_{source_hash}_transcription.json")
+            serialization_started_at = time.perf_counter()
+            with open(out_path, "w", encoding="utf-8") as f:
+                json.dump(output_data, f, ensure_ascii=False, indent=2)
+            metrics["stage_durations_s"]["output_serialization"] = round(
+                time.perf_counter() - serialization_started_at, 3
+            )
+            self._finalize_metrics(metrics, started_at)
             with open(out_path, "w", encoding="utf-8") as f:
                 json.dump(output_data, f, ensure_ascii=False, indent=2)
 
@@ -533,7 +640,8 @@ class AudioPipeline:
                     "model": self.config.transcription.model,
                     "backend": self.config.transcription.backend,
                     "vad": self.config.vad.provider,
-                    "llm_enabled": self.config.llm.enabled
+                    "llm_enabled": self.config.llm.enabled,
+                    "metrics": metrics,
                 }
             )
 
@@ -544,7 +652,8 @@ class AudioPipeline:
                 input_file=str(input_file) if input_file else "",
                 output_file=None,
                 segments=[],
-                error=str(e)
+                error=str(e),
+                metadata={"metrics": self._finalize_metrics(metrics, started_at)}
             )
 
         except AudioPipelineError as e:
@@ -554,7 +663,8 @@ class AudioPipeline:
                 input_file=str(input_file) if input_file else "",
                 output_file=None,
                 segments=[],
-                error=str(e)
+                error=str(e),
+                metadata={"metrics": self._finalize_metrics(metrics, started_at)}
             )
 
         except Exception as e:
@@ -564,7 +674,8 @@ class AudioPipeline:
                 input_file=str(input_file) if input_file else "",
                 output_file=None,
                 segments=[],
-                error=f"Unexpected error: {e}"
+                error=f"Unexpected error: {e}",
+                metadata={"metrics": self._finalize_metrics(metrics, started_at)}
             )
 
     def run_transcription_only(self, input_wav: str) -> PipelineResult:
