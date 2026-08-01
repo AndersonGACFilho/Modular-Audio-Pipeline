@@ -1,5 +1,5 @@
 """Domain models for asynchronous audio jobs."""
 
-from .audio_job import AudioJob, JobError, JobResult, JobStatus, MediaAsset
+from .audio_job import AnalysisOptions, AudioJob, AudioJobOptions, JobError, JobResult, JobStatus, MediaAsset, TranscriptionOptions
 
-__all__ = ["AudioJob", "JobError", "JobResult", "JobStatus", "MediaAsset"]
+__all__ = ["AnalysisOptions", "AudioJob", "AudioJobOptions", "JobError", "JobResult", "JobStatus", "MediaAsset", "TranscriptionOptions"]

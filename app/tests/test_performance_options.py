@@ -137,6 +137,8 @@ def test_batched_transcriber_uses_configured_options():
     transcriber.task = "transcribe"
     transcriber.temperature = 0.0
     transcriber.prompt = "context"
+    transcriber.hotwords = ["SIGOR", "MTR"]
+    transcriber.condition_on_previous_text = False
     transcriber.internal_vad = False
     transcriber.word_timestamps = False
     transcriber.batch_size = 4
@@ -152,6 +154,8 @@ def test_batched_transcriber_uses_configured_options():
                 "task": "transcribe",
                 "temperature": 0.0,
                 "initial_prompt": "context",
+                "hotwords": "SIGOR, MTR",
+                "condition_on_previous_text": False,
                 "vad_filter": True,
                 "word_timestamps": False,
                 "batch_size": 4,

@@ -428,12 +428,16 @@ class AudioPipeline(LoggerMixin):
                 self.logger.info("Mapping timestamps to original audio...")
                 mapping_started_at = time.perf_counter()
                 for seg in aligned_segments:
-                    seg["original_start"] = self._map_timestamp_to_original(
-                        seg["start"], all_mappings
-                    )
-                    seg["original_end"] = self._map_timestamp_to_original(
-                        seg["end"], all_mappings
-                    )
+                    original_start = self._map_timestamp_to_original(seg["start"], all_mappings)
+                    original_end = self._map_timestamp_to_original(seg["end"], all_mappings)
+                    if original_end < original_start:
+                        self.logger.warning(
+                            "Invalid timestamp mapping: processed=%s-%s, original=%s-%s",
+                            seg["start"], seg["end"], original_start, original_end,
+                        )
+                        original_end = max(original_start, all_mappings[-1].original_end)
+                    seg["original_start"] = original_start
+                    seg["original_end"] = original_end
                 metrics["stage_durations_s"]["timestamp_mapping"] = round(
                     time.perf_counter() - mapping_started_at, 3
                 )

@@ -238,7 +238,6 @@ def build_config(args: argparse.Namespace) -> PipelineConfig:
         logger.info(f"Loaded configuration from: {args.config}")
     else:
         config = PipelineConfig(media_dir=str(DEFAULT_MEDIA_DIRECTORY))
-        config.transcription.prompt = DEFAULT_PROMPTS["en_general"]
     
     # Override with command line arguments
     if args.media_dir:
@@ -255,9 +254,9 @@ def build_config(args: argparse.Namespace) -> PipelineConfig:
     if args.language:
         config.transcription.language = args.language
     if args.prompt:
-        config.transcription.prompt = args.prompt
+        config.transcription.initial_prompt = args.prompt
     elif args.prompt_preset:
-        config.transcription.prompt = DEFAULT_PROMPTS[args.prompt_preset]
+        config.transcription.initial_prompt = DEFAULT_PROMPTS[args.prompt_preset]
     
     # Processing options
     if args.separate_vocals:

@@ -41,12 +41,58 @@ class JobError:
     error_type: str
 
 
+@dataclass(frozen=True)
+class TranscriptionOptions:
+    """Immutable ASR options captured when a job is submitted."""
+
+    language: str = "pt"
+    locale: str = "pt-BR"
+    initial_prompt: str | None = None
+    hotwords: tuple[str, ...] = ()
+    condition_on_previous_text: bool = False
+
+
+@dataclass(frozen=True)
+class AnalysisOptions:
+    """Immutable LLM-analysis options captured when a job is submitted."""
+
+    profile_id: str | None = None
+    prompt: str | None = None
+    output_language: str = "pt-BR"
+
+
+@dataclass(frozen=True)
+class AudioJobOptions:
+    transcription: TranscriptionOptions = field(default_factory=TranscriptionOptions)
+    analysis: AnalysisOptions = field(default_factory=AnalysisOptions)
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any] | None) -> "AudioJobOptions":
+        value = value or {}
+        transcription = value.get("transcription", {})
+        analysis = value.get("analysis", {})
+        return cls(
+            transcription=TranscriptionOptions(
+                language=transcription.get("language", "pt"),
+                locale=transcription.get("locale", "pt-BR"),
+                initial_prompt=transcription.get("initial_prompt"),
+                hotwords=tuple(transcription.get("hotwords", ())),
+                condition_on_previous_text=transcription.get("condition_on_previous_text", False),
+            ),
+            analysis=AnalysisOptions(
+                profile_id=analysis.get("profile_id"),
+                prompt=analysis.get("prompt"),
+                output_language=analysis.get("output_language", "pt-BR"),
+            ),
+        )
+
+
 @dataclass
 class AudioJob:
     job_id: str
     source: MediaAsset
     status: JobStatus = JobStatus.QUEUED
-    options: dict[str, Any] = field(default_factory=dict)
+    options: AudioJobOptions = field(default_factory=AudioJobOptions)
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
     started_at: datetime | None = None

@@ -1,0 +1,13 @@
+"""Persistence port for the AudioJob aggregate."""
+
+from datetime import datetime
+from typing import Protocol
+
+from ...domain.models import AudioJob
+
+
+class JobRepository(Protocol):
+    def create(self, job: AudioJob) -> None: ...
+    def get(self, job_id: str) -> AudioJob | None: ...
+    def claim(self, job_id: str, worker_id: str, lease_until: datetime) -> AudioJob | None: ...
+    def save(self, job: AudioJob) -> None: ...

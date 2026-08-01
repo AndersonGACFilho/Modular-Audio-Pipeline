@@ -24,6 +24,7 @@ import os
 import json
 import logging
 import re
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +97,9 @@ class HybridLLMPostProcessor:
         temperature: float = 0.3,
         force_local: bool = False,
         lazy_load: bool = False,
+        profile_id: Optional[str] = None,
+        profile_prompt: Optional[str] = None,
+        output_language: str = "pt-BR",
     ):
         """
         Initialize hybrid processor.
@@ -133,6 +137,9 @@ class HybridLLMPostProcessor:
         self.device = device
         self.max_length = max_length
         self.temperature = temperature
+        self.profile_id = profile_id
+        self.profile_prompt = profile_prompt
+        self.output_language = output_language
         self._lazy_load = lazy_load
         self.profile_router = ProfileRouter()
 
@@ -391,7 +398,7 @@ class HybridLLMPostProcessor:
 
     def _build_prompt(self, text: str) -> str:
         profile = getattr(self, "_active_profile", "generic_meeting")
-        profile_instruction = PROFILE_INSTRUCTIONS[profile]
+        profile_instruction = getattr(self, "_active_profile_instruction", PROFILE_INSTRUCTIONS[profile])
         return (
             "You are an expert meeting analyst. Analyze the following transcription "
             "and extract key information.\n\n"
@@ -403,6 +410,7 @@ class HybridLLMPostProcessor:
             '- "sentiment": Overall tone (Positive, Neutral, or Negative)\n\n'
             f"Formatting profile: {profile}\n"
             f"Profile instructions: {profile_instruction}\n"
+            f"Write all generated fields in: {self.output_language}\n"
             "Put profile-specific fields in `profile_data` using clear snake_case keys.\n\n"
             f"Transcription:\n{text}\n\n"
             "JSON Analysis:"
@@ -510,7 +518,21 @@ class HybridLLMPostProcessor:
             classifier = (
                 self._classify_with_ollama if self.backend == "ollama" else None
             )
-            routing = self.profile_router.route(text, source_path, classifier)
+            profile_id = getattr(self, "profile_id", None)
+            profile_prompt = getattr(self, "profile_prompt", None)
+            if profile_id or profile_prompt:
+                profile = profile_id or "generic_meeting"
+                routing = ProfileRouting(
+                    profile=profile,
+                    confidence=1.0,
+                    reasoning="Selected from immutable job analysis options",
+                )
+                self._active_profile_instruction = profile_prompt or PROFILE_INSTRUCTIONS.get(
+                    profile, PROFILE_INSTRUCTIONS["generic_meeting"]
+                )
+            else:
+                routing = self.profile_router.route(text, source_path, classifier)
+                self._active_profile_instruction = PROFILE_INSTRUCTIONS[routing.profile]
             self._active_profile = routing.profile
             logger.info(
                 "Selected formatting profile: %s (confidence %.2f)",
@@ -523,10 +545,13 @@ class HybridLLMPostProcessor:
                 parsed = self._process_chunk(chunks[0])
             else:
                 logger.info("Analyzing transcription in %d chunks", len(chunks))
-                partials = [
-                    MeetingAnalysis(**self._process_chunk(chunk)).model_dump()
-                    for chunk in chunks
-                ]
+                partials = []
+                for index, chunk in enumerate(chunks, start=1):
+                    logger.info("Analyzing LLM chunk %d/%d (%d characters)", index, len(chunks), len(chunk))
+                    started_at = time.perf_counter()
+                    partials.append(MeetingAnalysis(**self._process_chunk(chunk)).model_dump())
+                    logger.info("LLM chunk %d/%d completed in %.1fs", index, len(chunks), time.perf_counter() - started_at)
+                logger.info("Consolidating %d partial LLM analyses", len(partials))
                 parsed = self._consolidate_chunks(partials)
 
             validated = MeetingAnalysis(**parsed)

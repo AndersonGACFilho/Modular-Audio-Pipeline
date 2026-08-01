@@ -25,7 +25,7 @@ class ProcessAudioJob:
         processing_directory = self._storage.prepare_processing(job.job_id)
         results_directory = self._storage.results_directory(job.job_id, job.created_at)
         try:
-            result = self._processor.process(job.source.path, processing_directory, results_directory)
+            result = self._processor.process(job, processing_directory, results_directory)
             if not result.success or not result.output_file:
                 raise RuntimeError(result.error or "Audio pipeline completed without an output file.")
             job.mark_completed(JobResult(output_path=result.output_file, segment_count=len(result.segments), metadata=result.metadata))

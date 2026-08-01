@@ -6,7 +6,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any
 
-from ....domain.models import AudioJob, JobError, JobResult, JobStatus, MediaAsset
+from ....domain.models import AudioJob, AudioJobOptions, JobError, JobResult, JobStatus, MediaAsset
 
 
 class MongoDBJobRepository:
@@ -61,7 +61,7 @@ class MongoDBJobRepository:
             job_id=document["_id"],
             source=MediaAsset(**document["source"]),
             status=JobStatus(document["status"]),
-            options=document.get("options", {}),
+            options=AudioJobOptions.from_dict(document.get("options")),
             created_at=document["created_at"],
             updated_at=document["updated_at"],
             started_at=document.get("started_at"),

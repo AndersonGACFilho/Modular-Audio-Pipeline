@@ -1,4 +1,6 @@
 {
+  "_scope": "CLI_ONLY",
+  "_description": "Workers receive operational settings from the environment and semantic settings from the persisted AudioJob.",
   "media_dir": "./files",
   "preserve_timestamps": true,
   "subprocess_timeout_s": 600,
@@ -37,13 +39,16 @@
     "device": "cuda",
     "compute_type": "float16",
     "language": "pt",
+    "locale": "pt-BR",
     "task": "transcribe",
     "temperature": 0.0,
     "beam_size": 5,
     "batch_size": 4,
     "word_timestamps": false,
     "internal_vad": false,
-    "prompt": "Uma reunião daily sobre o projeto do econtrole esg, que envolve o sigor, os integrantes são Anderson, Max, Paulo, Amós, Victor e Flávio. O objetivo é discutir o andamento do projeto, identificar obstáculos e definir as próximas ações. A reunião deve ser objetiva, com foco em resultados e soluções. Todos os participantes devem contribuir com suas perspectivas e experiências para enriquecer a discussão."
+    "initial_prompt": null,
+    "hotwords": ["eControle", "SIGOR", "SINIR", "MTR", "CNPJ", "webhook", "tenant", "endpoint"],
+    "condition_on_previous_text": false
   },
 
   "diarization": {
@@ -81,11 +86,11 @@
     ],
 
     "device": "auto",
-    "max_length": 1024,
+    "max_length": 512,
     "temperature": 0.3,
-    "request_timeout_s": 900,
-    "chunk_size_chars": 6000,
-    "chunk_max_length": 512,
+    "request_timeout_s": 120,
+    "chunk_size_chars": 12000,
+    "chunk_max_length": 256,
     "disable_thinking": true,
 
     "_notes": [

@@ -130,7 +130,7 @@ class WhisperTranscriber(TranscriberProtocol):
         return cls(
             model_name=config.transcription.model,
             language=config.transcription.language,
-            prompt=config.transcription.prompt,
+            prompt=config.transcription.initial_prompt or config.transcription.prompt or "",
             task=config.transcription.task,
             temperature=config.transcription.temperature,
             beam_size=config.transcription.beam_size,
@@ -235,6 +235,7 @@ class WhisperTranscriber(TranscriberProtocol):
                 temperature=self.temperature,
                 beam_size=self.beam_size,
                 initial_prompt=self.prompt if self.prompt else None,
+                condition_on_previous_text=False,
                 word_timestamps=True,  # Enable word-level timestamps
             )
             
@@ -307,6 +308,8 @@ class FasterWhisperTranscriber(TranscriberProtocol):
         language: str = "pt",
         task: str = "transcribe",
         prompt: str = "",
+        hotwords: list[str] | None = None,
+        condition_on_previous_text: bool = False,
         temperature: float = 0.0,
         batch_size: int = 1,
         word_timestamps: bool = False,
@@ -320,6 +323,8 @@ class FasterWhisperTranscriber(TranscriberProtocol):
         self.language = language
         self.task = task
         self.prompt = prompt
+        self.hotwords = hotwords or []
+        self.condition_on_previous_text = condition_on_previous_text
         self.temperature = temperature
         self.batch_size = batch_size
         self.word_timestamps = word_timestamps
@@ -356,7 +361,9 @@ class FasterWhisperTranscriber(TranscriberProtocol):
             beam_size=config.transcription.beam_size,
             language=config.transcription.language,
             task=config.transcription.task,
-            prompt=config.transcription.prompt or "",
+            prompt=config.transcription.initial_prompt or config.transcription.prompt or "",
+            hotwords=config.transcription.hotwords,
+            condition_on_previous_text=config.transcription.condition_on_previous_text,
             temperature=config.transcription.temperature,
             batch_size=config.transcription.batch_size,
             word_timestamps=config.transcription.word_timestamps,
@@ -437,6 +444,8 @@ class FasterWhisperTranscriber(TranscriberProtocol):
             "task": self.task,
             "temperature": self.temperature,
             "initial_prompt": self.prompt or None,
+            "hotwords": ", ".join(getattr(self, "hotwords", [])) or None,
+            "condition_on_previous_text": getattr(self, "condition_on_previous_text", False),
             "vad_filter": use_vad_filter,
             "word_timestamps": self.word_timestamps,
         }

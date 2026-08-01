@@ -99,10 +99,14 @@ class TranscriptionConfig:
     device: str = "cuda"
     compute_type: str = "float16"  # For faster-whisper (float16, int8)
     language: str = "pt"
+    locale: str = "pt-BR"
     task: str = "transcribe"
+    initial_prompt: Optional[str] = None
+    hotwords: list[str] = field(default_factory=list)
+    condition_on_previous_text: bool = False
     temperature: float = 0.0
     beam_size: int = 5
-    prompt: Optional[str] = None
+    prompt: Optional[str] = None  # Deprecated CLI alias for initial_prompt.
     batch_size: int = 16
     word_timestamps: bool = False
     internal_vad: bool = False
@@ -297,7 +301,10 @@ class PipelineConfig:
         if "vocal_separation" in data:
             config.vocal_separation = VocalSeparationConfig(**_filter_comment_keys(data["vocal_separation"]))
         if "transcription" in data:
-            config.transcription = TranscriptionConfig(**_filter_comment_keys(data["transcription"]))
+            transcription = _filter_comment_keys(data["transcription"])
+            if "initial_prompt" not in transcription and "prompt" in transcription:
+                transcription["initial_prompt"] = transcription["prompt"]
+            config.transcription = TranscriptionConfig(**transcription)
         if "diarization" in data:
             config.diarization = DiarizationConfig(**_filter_comment_keys(data["diarization"]))
         if "redundancy" in data:
@@ -381,7 +388,5 @@ def get_default_config() -> PipelineConfig:
     Get default pipeline configuration.
     """
     config = PipelineConfig()
-
-    config.transcription.prompt = DEFAULT_PROMPTS["en_general"]
 
     return config
