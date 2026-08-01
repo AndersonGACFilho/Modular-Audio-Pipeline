@@ -3,6 +3,7 @@ from datetime import date
 from pathlib import Path
 
 from rich.logging import RichHandler
+from rich.console import Console
 
 CONSOLE_FORMAT = (
     "%(name)s.%(funcName)s:%(lineno)d"
@@ -20,7 +21,8 @@ def configure_logging(
     entrypoint: str,
     level: int = logging.INFO,
     log_directory: str | Path = "logs",
-) -> None:
+    console: Console | None = None,
+) -> Console:
     """
     Configures logging for the entire application.
 
@@ -37,7 +39,9 @@ def configure_logging(
     application_log_path = log_path / f"application_{log_date}.log"
     error_log_path = log_path / f"error_{log_date}.log"
 
+    console = console or Console()
     console_handler = RichHandler(
+        console=console,
         rich_tracebacks=True,
         show_time=True,
         show_level=True,
@@ -89,3 +93,4 @@ def configure_logging(
     )
 
     logging.captureWarnings(True)
+    return console

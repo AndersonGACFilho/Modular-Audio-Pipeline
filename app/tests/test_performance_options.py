@@ -167,9 +167,9 @@ def test_batched_transcriber_uses_configured_options():
 def test_pipeline_metrics_record_stage_and_total_duration():
     metrics = {"stage_durations_s": {}, "media": {}, "segments": {}}
 
-    result = AudioPipeline._measure_stage(
-        object(), metrics, "sample_stage", lambda: "completed"
-    )
+    pipeline = object.__new__(AudioPipeline)
+    pipeline.progress_callback = None
+    result = pipeline._measure_stage(metrics, "sample_stage", lambda: "completed")
     completed = AudioPipeline._finalize_metrics(metrics, 0.0)
 
     assert result == "completed"

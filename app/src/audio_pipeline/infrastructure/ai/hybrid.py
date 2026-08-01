@@ -16,7 +16,7 @@ Override via config:
 
 from __future__ import annotations
 
-from typing import List, Optional, Dict, Any, Literal
+from typing import Callable, List, Optional, Dict, Any, Literal
 from pydantic import BaseModel, Field, ValidationError
 
 from ...config.profiles import PROFILE_INSTRUCTIONS, ProfileRouter
@@ -100,6 +100,7 @@ class HybridLLMPostProcessor:
         profile_id: Optional[str] = None,
         profile_prompt: Optional[str] = None,
         output_language: str = "pt-BR",
+        progress_callback: Optional[Callable[[str], None]] = None,
     ):
         """
         Initialize hybrid processor.
@@ -140,6 +141,7 @@ class HybridLLMPostProcessor:
         self.profile_id = profile_id
         self.profile_prompt = profile_prompt
         self.output_language = output_language
+        self.progress_callback = progress_callback
         self._lazy_load = lazy_load
         self.profile_router = ProfileRouter()
 
@@ -472,6 +474,11 @@ class HybridLLMPostProcessor:
             remaining = remaining[split_at:].lstrip()
         return chunks
 
+    def _report_progress(self, detail: str) -> None:
+        callback = getattr(self, "progress_callback", None)
+        if callback:
+            callback(detail)
+
     def _process_chunk(self, text: str) -> Dict[str, Any]:
         """Analyze one bounded text chunk with the active backend."""
         if self.backend == "ollama":
@@ -542,15 +549,18 @@ class HybridLLMPostProcessor:
 
             chunks = self._split_text(text)
             if len(chunks) == 1:
+                self._report_progress("LLM analysis - generating response")
                 parsed = self._process_chunk(chunks[0])
             else:
                 logger.info("Analyzing transcription in %d chunks", len(chunks))
                 partials = []
                 for index, chunk in enumerate(chunks, start=1):
+                    self._report_progress(f"LLM analysis - chunk {index}/{len(chunks)}")
                     logger.info("Analyzing LLM chunk %d/%d (%d characters)", index, len(chunks), len(chunk))
                     started_at = time.perf_counter()
                     partials.append(MeetingAnalysis(**self._process_chunk(chunk)).model_dump())
                     logger.info("LLM chunk %d/%d completed in %.1fs", index, len(chunks), time.perf_counter() - started_at)
+                self._report_progress(f"LLM analysis - consolidating {len(partials)} chunks")
                 logger.info("Consolidating %d partial LLM analyses", len(partials))
                 parsed = self._consolidate_chunks(partials)
 

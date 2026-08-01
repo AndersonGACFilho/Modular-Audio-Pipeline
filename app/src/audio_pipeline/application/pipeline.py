@@ -99,6 +99,8 @@ class AudioPipeline(LoggerMixin):
         checkpoint_manager: Optional[CheckpointManager] = None,
         artifact_renamer: Optional[ArtifactRenamer] = None,
         llm_processor_factory: Optional[Callable[[], Any]] = None,
+        progress_callback: Optional[Callable[[str], None]] = None,
+        file_callback: Optional[Callable[[str], None]] = None,
     ):
         """Create AudioPipeline.
 
@@ -130,6 +132,8 @@ class AudioPipeline(LoggerMixin):
         self.segment_merger = segment_merger
         self.artifact_renamer = artifact_renamer
         self.llm_processor_factory = llm_processor_factory
+        self.progress_callback = progress_callback
+        self.file_callback = file_callback
 
         # LLM Post-Processor — intentionally NOT loaded here.
         # It is initialized lazily inside run(), AFTER transcription and
@@ -262,10 +266,19 @@ class AudioPipeline(LoggerMixin):
 
         return aligned
 
+    def _report_progress(self, stage: str) -> None:
+        if self.progress_callback:
+            self.progress_callback(stage.replace("_", " ").capitalize())
+
+    def _report_file(self, file_path: str) -> None:
+        if self.file_callback:
+            self.file_callback(file_path)
+
     def _measure_stage(
         self, metrics: Dict[str, Any], name: str, operation: Callable[[], Any]
     ) -> Any:
         """Run an operation and record its elapsed wall-clock duration."""
+        self._report_progress(name)
         started_at = time.perf_counter()
         try:
             return operation()
@@ -310,6 +323,7 @@ class AudioPipeline(LoggerMixin):
                 )
 
             base = Path(media_file).stem
+            self._report_file(str(media_file))
             self.logger.info(f"Processing: {media_file}")
             source_info = self.media.get_media_info(media_file)
             metrics["media"] = {
@@ -326,6 +340,7 @@ class AudioPipeline(LoggerMixin):
                 )
             else:
                 wav = media_file
+                self._report_progress("media conversion")
                 metrics["stage_durations_s"]["media_conversion"] = 0.0
 
             # Step 3: Preprocess
@@ -339,6 +354,7 @@ class AudioPipeline(LoggerMixin):
                 )
             else:
                 denoised = wav
+                self._report_progress("noise reduction")
                 metrics["stage_durations_s"]["noise_reduction"] = 0.0
 
             # Vocal separation
@@ -349,6 +365,7 @@ class AudioPipeline(LoggerMixin):
                 )
             else:
                 vocals = denoised
+                self._report_progress("vocal separation")
                 metrics["stage_durations_s"]["vocal_separation"] = 0.0
 
             # Normalization
@@ -386,6 +403,7 @@ class AudioPipeline(LoggerMixin):
                     all_mappings = self._compose_timestamp_mappings(all_mappings, vad_mappings)
             else:
                 voiced_wav = silence_removed
+                self._report_progress("voice activity detection")
                 metrics["stage_durations_s"]["voice_activity_detection"] = 0.0
 
             metrics["media"]["post_silence_duration_s"] = round(get_audio_duration(silence_removed), 3)
@@ -412,6 +430,7 @@ class AudioPipeline(LoggerMixin):
                 )
             else:
                 diarization_segments = []
+                self._report_progress("diarization")
                 metrics["stage_durations_s"]["diarization"] = 0.0
 
             # Step 7: Align
@@ -424,6 +443,7 @@ class AudioPipeline(LoggerMixin):
             metrics["segments"]["aligned"] = len(aligned_segments)
 
             # Step 8: Map timestamps
+            self._report_progress("timestamp mapping")
             if self.config.preserve_timestamps and all_mappings:
                 self.logger.info("Mapping timestamps to original audio...")
                 mapping_started_at = time.perf_counter()
@@ -465,12 +485,14 @@ class AudioPipeline(LoggerMixin):
                     metrics, "segment_merging", lambda: self.segment_merger.merge(final_segments)
                 )
             else:
+                self._report_progress("segment merging")
                 metrics["stage_durations_s"]["segment_merging"] = 0.0
             metrics["segments"]["final"] = len(final_segments)
 
             # Step 11: LLM Post-Processing
             # Unload transcription and diarization models first to free VRAM
             # before loading the LLM (critical on GPUs with ≤ 8 GB VRAM).
+            self._report_progress("llm analysis")
             llm_analysis = None
             llm_started_at = time.perf_counter()
             if self.config.llm.enabled:
@@ -570,6 +592,7 @@ class AudioPipeline(LoggerMixin):
                     metrics["media"]["generated_artifact_renames"] = artifact_renames
 
             # Step 12: Save results and metrics
+            self._report_progress("saving results")
             output_data = {
                 "metadata": {
                     "source_file": str(media_file),

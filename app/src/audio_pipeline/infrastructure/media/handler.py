@@ -143,38 +143,33 @@ class MediaHandler(MediaHandlerProtocol):
         Raises:
             MediaNotFoundError: If no valid media file found
         """
+        files = self.list_media_files()
+        first = files[0]
+        return first, Path(first).suffix.lower() in self.VIDEO_EXTENSIONS
+
+    def list_media_files(self) -> list[str]:
+        """Discover every readable media file in deterministic processing order."""
         self._prepare_temp_dir()
-        
-        # First, try to find audio files (preferred)
+        audio_files: list[str] = []
+        video_files: list[str] = []
         for fname in sorted(os.listdir(self.media_dir)):
             full_path = os.path.join(self.media_dir, fname)
-            
             if not os.path.isfile(full_path):
                 continue
-            
-            ext = Path(fname).suffix.lower()
-            
-            if ext in self.AUDIO_EXTENSIONS and self._has_audio_stream(full_path):
-                logger.info(f"Found audio file: {fname}")
-                return full_path, False
-        
-        # Then try video files
-        for fname in sorted(os.listdir(self.media_dir)):
-            full_path = os.path.join(self.media_dir, fname)
-            
-            if not os.path.isfile(full_path):
+            extension = Path(fname).suffix.lower()
+            if extension not in self.AUDIO_EXTENSIONS | self.VIDEO_EXTENSIONS:
                 continue
-            
-            ext = Path(fname).suffix.lower()
-            
-            if ext in self.VIDEO_EXTENSIONS and self._has_audio_stream(full_path):
-                logger.info(f"Found video file: {fname}")
-                return full_path, True
-        
-        raise MediaNotFoundError(
-            f"No valid media file found in {self.media_dir}",
-            details=f"Supported audio: {self.AUDIO_EXTENSIONS}\nSupported video: {self.VIDEO_EXTENSIONS}"
-        )
+            if not self._has_audio_stream(full_path):
+                continue
+            (audio_files if extension in self.AUDIO_EXTENSIONS else video_files).append(full_path)
+        files = audio_files + video_files
+        if not files:
+            raise MediaNotFoundError(
+                f"No valid media file found in {self.media_dir}",
+                details=f"Supported audio: {self.AUDIO_EXTENSIONS}\nSupported video: {self.VIDEO_EXTENSIONS}",
+            )
+        logger.info("Found %d media file(s) queued for processing", len(files))
+        return files
     
     def find_specific_file(self, filename: str) -> Tuple[str, bool]:
         """
@@ -189,6 +184,7 @@ class MediaHandler(MediaHandlerProtocol):
         Raises:
             MediaNotFoundError: If file not found
         """
+        self._prepare_temp_dir()
         full_path = os.path.join(self.media_dir, filename)
         
         if not os.path.isfile(full_path):

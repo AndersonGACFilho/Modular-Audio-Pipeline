@@ -29,7 +29,7 @@ from audio_pipeline.config import (
 from audio_pipeline.application.pipeline import AudioPipeline
 from audio_pipeline.bootstrap import create_audio_pipeline
 from audio_pipeline.domain.exceptions import AudioPipelineError, ConfigurationError
-from shared.observability import configure_logging
+from shared.observability import TerminalProgress, configure_logging
 
 
 logger = logging.getLogger(__name__)
@@ -293,11 +293,12 @@ def main() -> int:
     pipeline: Optional[AudioPipeline] = None
 
     log_level = logging.DEBUG if args.debug else logging.INFO
-    configure_logging(
+    console = configure_logging(
         entrypoint=Path(__file__).stem,
         level=log_level,
         log_directory=PROJECT_ROOT / "logs",
     )
+    progress = TerminalProgress(console)
     
     try:
         # Setup environment
@@ -310,20 +311,32 @@ def main() -> int:
         logger.info(f"Model: {config.transcription.model}")
         logger.info(f"Language: {config.transcription.language}")
         
-        # Create and run pipeline
-        pipeline = create_audio_pipeline(config)
+        # Build the pipeline once, then process the local media queue in order.
+        pipeline = create_audio_pipeline(
+            config,
+            progress_callback=progress.update_stage,
+            file_callback=progress.set_file,
+        )
+        media_files = [args.input] if args.input else pipeline.media.list_media_files()
+        progress.set_total_files(len(media_files))
+        progress.start()
+
+        all_success = True
+        result = None
+        for index, media_file in enumerate(media_files, start=1):
+            progress.set_file(media_file, index)
+            result = pipeline.run(input_file=media_file)
+            if result.success:
+                logger.info("Completed file %d/%d: %s", index, len(media_files), result.output_file)
+            else:
+                all_success = False
+                logger.error("Failed file %d/%d (%s): %s", index, len(media_files), media_file, result.error)
         
-        result = pipeline.run(input_file=args.input)
-        
-        if result.success:
-            logger.info("✓ Processing complete!")
-            logger.info(f"  Input: {result.input_file}")
-            logger.info(f"  Output: {result.output_file}")
-            logger.info(f"  Segments: {len(result.segments)}")
+        if all_success:
+            logger.info("Queue completed: %d file(s) processed.", len(media_files))
             return 0
-        else:
-            logger.error(f"✗ Processing failed: {result.error}")
-            return 1
+        logger.error("Queue completed with failures. Review the per-file errors above.")
+        return 1
 
     except ConfigurationError as e:
         logger.error(f"Configuration error: {e}")
@@ -338,6 +351,7 @@ def main() -> int:
         logger.exception(f"Unexpected error: {e}")
         return 1
     finally:
+        progress.stop()
         if pipeline is not None and not args.no_cleanup:
             pipeline.cleanup()
 

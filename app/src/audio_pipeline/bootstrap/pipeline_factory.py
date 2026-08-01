@@ -1,5 +1,7 @@
 """Composition root for the concrete audio-processing pipeline."""
 
+from typing import Callable
+
 from ..application.pipeline import AudioPipeline
 from ..config import PipelineConfig
 from ..domain.models import AnalysisOptions
@@ -15,7 +17,12 @@ from ..infrastructure.storage.artifacts import LocalArtifactRenamer
 from ..utils import CheckpointManager
 
 
-def create_audio_pipeline(config: PipelineConfig, analysis_options: AnalysisOptions | None = None) -> AudioPipeline:
+def create_audio_pipeline(
+    config: PipelineConfig,
+    analysis_options: AnalysisOptions | None = None,
+    progress_callback: Callable[[str], None] | None = None,
+    file_callback: Callable[[str], None] | None = None,
+) -> AudioPipeline:
     """Build the production pipeline from a validated configuration."""
     config.validate()
     checkpoints = CheckpointManager(config.checkpoint_dir) if config.checkpoint_enabled else None
@@ -44,5 +51,6 @@ def create_audio_pipeline(config: PipelineConfig, analysis_options: AnalysisOpti
             profile_id=analysis_options.profile_id if analysis_options else None,
             profile_prompt=analysis_options.prompt if analysis_options else None,
             output_language=analysis_options.output_language if analysis_options else "pt-BR",
+            progress_callback=progress_callback,
         )
-    return AudioPipeline(config, MediaHandler.from_config(config), AudioPreprocessor.from_config(config), separator, vad, transcriber, diarizer, redundancy, merger, checkpoints, LocalArtifactRenamer(), create_llm_processor)
+    return AudioPipeline(config, MediaHandler.from_config(config), AudioPreprocessor.from_config(config), separator, vad, transcriber, diarizer, redundancy, merger, checkpoints, LocalArtifactRenamer(), create_llm_processor, progress_callback, file_callback)
