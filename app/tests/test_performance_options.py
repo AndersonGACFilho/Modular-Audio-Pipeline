@@ -1,14 +1,11 @@
 from audio_pipeline.config import PipelineConfig
 from audio_pipeline.application.pipeline import AudioPipeline
 from audio_pipeline.config.profiles import ProfileRouter, ProfileRouting
-from audio_pipeline.domain.naming import (
-    contextual_output_stem,
-    rename_derived_artifact,
-    rename_source_media,
-)
+from audio_pipeline.domain.naming import contextual_output_stem
+from audio_pipeline.infrastructure.storage.artifacts import rename_derived_artifact, rename_source_media
 from audio_pipeline.documentation import archival_segments, documentation_text
-from audio_pipeline.processing.postprocessing.hybrid import HybridLLMPostProcessor
-from audio_pipeline.processing.speech.transcriber import FasterWhisperTranscriber
+from audio_pipeline.infrastructure.ai.hybrid import HybridLLMPostProcessor
+from audio_pipeline.infrastructure.speech.transcriber import FasterWhisperTranscriber
 
 
 def test_config_exposes_performance_controls():

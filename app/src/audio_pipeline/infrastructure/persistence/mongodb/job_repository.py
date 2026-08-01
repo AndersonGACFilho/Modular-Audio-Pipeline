@@ -37,13 +37,16 @@ class MongoDBJobRepository:
         )
         return self._from_document(document) if document else None
 
-    def mark_completed(self, job_id: str, result: JobResult) -> None:
-        now = datetime.now(timezone.utc)
-        self._collection.update_one({"_id": job_id, "status": JobStatus.PROCESSING.value}, {"$set": {"status": JobStatus.COMPLETED.value, "result": asdict(result), "error": None, "completed_at": now, "updated_at": now}, "$unset": {"lease_until": "", "worker_id": ""}})
-
-    def mark_failed(self, job_id: str, error: JobError) -> None:
-        now = datetime.now(timezone.utc)
-        self._collection.update_one({"_id": job_id, "status": JobStatus.PROCESSING.value}, {"$set": {"status": JobStatus.FAILED.value, "error": asdict(error), "completed_at": now, "updated_at": now}, "$unset": {"lease_until": "", "worker_id": ""}})
+    def save(self, job: AudioJob) -> None:
+        """Persist an aggregate that already performed its own transition."""
+        document = self._to_document(job)
+        job_id = document.pop("_id")
+        result = self._collection.update_one(
+            {"_id": job_id, "status": JobStatus.PROCESSING.value},
+            {"$set": document, "$unset": {"lease_until": "", "worker_id": ""}},
+        )
+        if result.matched_count != 1:
+            raise RuntimeError(f"Could not save job {job_id!r}: it is no longer being processed.")
 
     @staticmethod
     def _to_document(job: AudioJob) -> dict[str, Any]:

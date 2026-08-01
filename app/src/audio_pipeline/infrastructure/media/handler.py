@@ -21,7 +21,7 @@ import logging
 
 from ...config import PipelineConfig, RetryConfig
 from ...domain.exceptions import FileValidationError, MediaConversionError, MediaNotFoundError
-from ...domain.protocols import MediaHandlerProtocol
+from ...application.ports.media_processing import MediaHandlerProtocol
 from ...utils import retry_with_backoff, validate_file
 
 logger = logging.getLogger(__name__)

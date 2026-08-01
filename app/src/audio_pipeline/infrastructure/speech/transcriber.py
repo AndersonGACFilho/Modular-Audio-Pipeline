@@ -29,7 +29,7 @@ import torch
 
 from ...config import PipelineConfig, RetryConfig
 from ...domain.exceptions import ModelLoadError, TranscriptionError
-from ...domain.protocols import TranscriberProtocol
+from ...application.ports.media_processing import TranscriberProtocol
 from ...utils import retry_with_backoff
 
 logger = logging.getLogger(__name__)

@@ -15,7 +15,7 @@ import torch
 
 from ...config import PipelineConfig, RetryConfig
 from ...domain.exceptions import DiarizationError, ModelLoadError
-from ...domain.protocols import DiarizationSegment, DiarizerProtocol
+from ...application.ports.media_processing import DiarizationSegment, DiarizerProtocol
 from ...utils import retry_with_backoff
 
 logger = logging.getLogger(__name__)

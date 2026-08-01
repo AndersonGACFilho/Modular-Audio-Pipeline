@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ..application.use_cases import ProcessAudioJob
+from ..bootstrap import AudioPipelineProcessor
 from ..configuration import JobSettings
 from ..infrastructure.messaging.rabbitmq.job_queue import RabbitMQJobQueue
 from ..infrastructure.persistence.mongodb.job_repository import MongoDBJobRepository
@@ -15,7 +16,7 @@ def main() -> int:
     configure_logging(entrypoint="rabbitmq_worker", log_directory=settings.data_root / "logs")
     repository = MongoDBJobRepository(settings.mongodb_uri, settings.mongodb_database, settings.mongodb_collection)
     queue = RabbitMQJobQueue(settings.rabbitmq_url, settings.rabbitmq_queue, settings.rabbitmq_dead_letter_queue)
-    use_case = ProcessAudioJob(repository, LocalDatedStorage(settings.data_root), settings.lease_seconds)
+    use_case = ProcessAudioJob(repository, LocalDatedStorage(settings.data_root), AudioPipelineProcessor(), settings.lease_seconds)
     queue.consume(use_case.execute)
     return 0
 

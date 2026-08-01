@@ -43,6 +43,9 @@ build-backend = "hatchling.build"
 [tool.uv]
 package = false
 
+[tool.pytest.ini_options]
+pythonpath = ["app/src"]
+
 [[tool.uv.index]]
 name = "pytorch-cu121"
 url = "https://download.pytorch.org/whl/cu121"

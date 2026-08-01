@@ -15,7 +15,7 @@ import logging
 import re
 
 from ...config import PipelineConfig, RedundancyConfig
-from ...domain.protocols import RedundancyRemoverProtocol
+from ...application.ports.media_processing import RedundancyRemoverProtocol
 
 logger = logging.getLogger(__name__)
 

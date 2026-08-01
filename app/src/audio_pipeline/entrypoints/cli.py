@@ -27,6 +27,7 @@ from audio_pipeline.config import (
     DEFAULT_PROMPTS,
 )
 from audio_pipeline.application.pipeline import AudioPipeline
+from audio_pipeline.bootstrap import create_audio_pipeline
 from audio_pipeline.domain.exceptions import AudioPipelineError, ConfigurationError
 from shared.observability import configure_logging
 
@@ -311,7 +312,7 @@ def main() -> int:
         logger.info(f"Language: {config.transcription.language}")
         
         # Create and run pipeline
-        pipeline = AudioPipeline(config)
+        pipeline = create_audio_pipeline(config)
         
         result = pipeline.run(input_file=args.input)
         

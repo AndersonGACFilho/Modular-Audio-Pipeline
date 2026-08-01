@@ -8,11 +8,11 @@ from pathlib import Path
 from uuid import uuid4
 
 from ...domain.models import AudioJob, MediaAsset
-from ...domain.ports import JobQueue, JobRepository
+from ..ports import JobPublisher, JobRepository
 
 
 class SubmitAudioJob:
-    def __init__(self, repository: JobRepository, queue: JobQueue) -> None:
+    def __init__(self, repository: JobRepository, queue: JobPublisher) -> None:
         self._repository = repository
         self._queue = queue
 

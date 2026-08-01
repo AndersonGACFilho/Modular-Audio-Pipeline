@@ -19,11 +19,12 @@ from pathlib import Path
 from typing import List, Dict, Optional, Any, Callable
 from dataclasses import dataclass
 
-from ..config import PipelineConfig, get_default_config
+from ..config import PipelineConfig
 from ..documentation import archival_segments, documentation_text
 from ..domain.exceptions import AudioPipelineError, MediaNotFoundError
-from ..domain.naming import contextual_output_stem, rename_derived_artifact, rename_source_media
-from ..domain.protocols import (
+from ..domain.naming import contextual_output_stem
+from .ports.artifact_renamer import ArtifactRenamer
+from .ports.media_processing import (
     MediaHandlerProtocol,
     PreprocessorProtocol,
     VocalSeparatorProtocol,
@@ -31,17 +32,10 @@ from ..domain.protocols import (
     TranscriberProtocol,
     DiarizerProtocol,
     RedundancyRemoverProtocol,
+    SegmentMergerProtocol,
     DiarizationSegment,
     TimestampMapping
 )
-from ..infrastructure.media.handler import MediaHandler
-from ..infrastructure.media.preprocessor import AudioPreprocessor
-from ..infrastructure.media.separator import NoOpVocalSeparator, VocalSeparator
-from ..infrastructure.speech.diarizer import NoOpDiarizer, SpeakerDiarizer
-from ..infrastructure.speech.redundancy import NoOpRedundancyRemover, RedundancyRemover
-from ..infrastructure.speech.segment_merger import SegmentMerger
-from ..infrastructure.speech.transcriber import FasterWhisperTranscriber, WhisperTranscriber
-from ..infrastructure.speech.vad import NoOpVADFilter, SileroVADFilter, VADFilter
 from ..utils import CheckpointManager, ensure_directory, get_audio_duration
 from shared.observability import LoggerMixin
 
@@ -93,28 +87,30 @@ class AudioPipeline(LoggerMixin):
 
     def __init__(
         self,
-        config: Optional[PipelineConfig] = None,
-        media_handler: Optional[MediaHandlerProtocol] = None,
-        preprocessor: Optional[PreprocessorProtocol] = None,
-        separator: Optional[VocalSeparatorProtocol] = None,
-        vad: Optional[VADProtocol] = None,
-        transcriber: Optional[TranscriberProtocol] = None,
-        diarizer: Optional[DiarizerProtocol] = None,
-        redundancy_remover: Optional[RedundancyRemoverProtocol] = None
+        config: PipelineConfig,
+        media_handler: MediaHandlerProtocol,
+        preprocessor: PreprocessorProtocol,
+        separator: VocalSeparatorProtocol,
+        vad: VADProtocol,
+        transcriber: TranscriberProtocol,
+        diarizer: DiarizerProtocol,
+        redundancy_remover: RedundancyRemoverProtocol,
+        segment_merger: SegmentMergerProtocol,
+        checkpoint_manager: Optional[CheckpointManager] = None,
+        artifact_renamer: Optional[ArtifactRenamer] = None,
+        llm_processor_factory: Optional[Callable[[], Any]] = None,
     ):
         """Create AudioPipeline.
 
         Parameters
         ----------
         config:
-            PipelineConfig instance. If None, defaults are used.
+            Validated PipelineConfig instance.
         media_handler, preprocessor, separator, vad, transcriber, diarizer,
         redundancy_remover:
-            Optional custom components implementing the corresponding
-            protocols. If not provided, default implementations are created
-            based on the configuration.
+            Concrete adapters implementing the corresponding application ports.
         """
-        self.config = config or get_default_config()
+        self.config = config
         self.config.validate()
 
         # Setup directories
@@ -123,63 +119,17 @@ class AudioPipeline(LoggerMixin):
         self.results_dir = ensure_directory(self.config.results_dir)
 
         # Setup checkpoint manager
-        self.checkpoint_manager = None
-        if self.config.checkpoint_enabled:
-            self.checkpoint_manager = CheckpointManager(self.config.checkpoint_dir)
-
-        # Initialize components
-        self.media = media_handler or MediaHandler.from_config(self.config)
-        self.preprocessor = preprocessor or AudioPreprocessor.from_config(self.config)
-
-        # Separator
-        if separator:
-            self.separator = separator
-        elif self.config.vocal_separation.enabled:
-            self.separator = VocalSeparator.from_config(self.config, self.checkpoint_manager)
-        else:
-            self.separator = NoOpVocalSeparator()
-
-        # VAD
-        if vad:
-            self.vad = vad
-        elif self.config.vad.enabled:
-            if self.config.vad.provider == "silero":
-                self.logger.info("Using Silero VAD (optimized)")
-                self.vad = SileroVADFilter(
-                    threshold=self.config.vad.threshold,
-                    sampling_rate=self.config.audio.sample_rate
-                )
-            else:
-                self.logger.info("Using WebRTC VAD (legacy)")
-                self.vad = VADFilter.from_config(self.config)
-        else:
-            self.vad = NoOpVADFilter()
-
-        # Transcriber
-        if transcriber:
-            self.transcriber = transcriber
-        elif self.config.transcription.backend == "faster-whisper":
-            self.logger.info("Using FasterWhisper (optimized)")
-            self.transcriber = FasterWhisperTranscriber.from_config(self.config)
-        else:
-            self.logger.info("Using standard Whisper")
-            self.transcriber = WhisperTranscriber.from_config(self.config)
-
-        # Diarizer
-        if diarizer:
-            self.diarizer = diarizer
-        elif self.config.diarization.enabled:
-            self.diarizer = SpeakerDiarizer.from_config(self.config)
-        else:
-            self.diarizer = NoOpDiarizer()
-
-        # Redundancy remover
-        if redundancy_remover:
-            self.redundancy = redundancy_remover
-        elif self.config.redundancy.enabled:
-            self.redundancy = RedundancyRemover.from_config(self.config)
-        else:
-            self.redundancy = NoOpRedundancyRemover()
+        self.checkpoint_manager = checkpoint_manager
+        self.media = media_handler
+        self.preprocessor = preprocessor
+        self.separator = separator
+        self.vad = vad
+        self.transcriber = transcriber
+        self.diarizer = diarizer
+        self.redundancy = redundancy_remover
+        self.segment_merger = segment_merger
+        self.artifact_renamer = artifact_renamer
+        self.llm_processor_factory = llm_processor_factory
 
         # LLM Post-Processor — intentionally NOT loaded here.
         # It is initialized lazily inside run(), AFTER transcription and
@@ -507,11 +457,8 @@ class AudioPipeline(LoggerMixin):
             # Step 10: Merge short segments if needed
             if self.config.segment_merging.enabled:
                 self.logger.info("Merging short segments...")
-                merger = SegmentMerger(
-                    max_gap_s=self.config.segment_merging.max_gap_s
-                )
                 final_segments = self._measure_stage(
-                    metrics, "segment_merging", lambda: merger.merge(final_segments)
+                    metrics, "segment_merging", lambda: self.segment_merger.merge(final_segments)
                 )
             else:
                 metrics["stage_durations_s"]["segment_merging"] = 0.0
@@ -538,25 +485,9 @@ class AudioPipeline(LoggerMixin):
                         torch.cuda.empty_cache()
                         import gc; gc.collect()
 
-                    from ..infrastructure.ai.hybrid import HybridLLMPostProcessor
-                    self.llm_processor = HybridLLMPostProcessor(
-                        model=self.config.llm.openai_model,
-                        ollama_host=self.config.llm.ollama_host,
-                        ollama_model=self.config.llm.ollama_model,
-                        use_ollama=self.config.llm.use_ollama,
-                        use_openai=self.config.llm.use_openai,
-                        ollama_num_ctx=self.config.llm.ollama_num_ctx,
-                        ollama_keep_alive=self.config.llm.ollama_keep_alive,
-                        request_timeout_s=self.config.llm.request_timeout_s,
-                        chunk_size_chars=self.config.llm.chunk_size_chars,
-                        chunk_max_length=self.config.llm.chunk_max_length,
-                        disable_thinking=self.config.llm.disable_thinking,
-                        local_model=self.config.llm.local_model,
-                        device=self.config.llm.device,
-                        max_length=self.config.llm.max_length,
-                        temperature=self.config.llm.temperature,
-                        lazy_load=True,
-                    )
+                    if self.llm_processor_factory is None:
+                        raise RuntimeError("No LLM processor factory was configured.")
+                    self.llm_processor = self.llm_processor_factory()
                     info = self.llm_processor.get_backend_info()
                     self.logger.info(f"✓ LLM initialized: {info['backend']} ({info['model']})")
                 except Exception as e:
@@ -605,9 +536,9 @@ class AudioPipeline(LoggerMixin):
             )
             output_stem = contextual_output_stem(str(media_file), formatting)
             original_media_file = media_file
-            if formatting:
+            if formatting and self.artifact_renamer:
                 try:
-                    media_file = rename_source_media(media_file, output_stem)
+                    media_file = self.artifact_renamer.rename_source_media(media_file, output_stem)
                     metrics["media"]["renamed_from"] = original_media_file
                     metrics["media"]["renamed_to"] = media_file
                 except OSError as error:
@@ -626,7 +557,7 @@ class AudioPipeline(LoggerMixin):
                 artifact_renames = []
                 for artifact in dict.fromkeys(generated_artifacts):
                     try:
-                        renamed_artifact = rename_derived_artifact(artifact, base, output_stem)
+                        renamed_artifact = self.artifact_renamer.rename_derived_artifact(artifact, base, output_stem)
                         if renamed_artifact:
                             artifact_renames.append({"from": artifact, "to": renamed_artifact})
                     except OSError as error:

@@ -4,6 +4,16 @@ from pathlib import Path
 from typing import Optional
 
 
+class LocalArtifactRenamer:
+    """Local-filesystem implementation of the artifact-renaming port."""
+
+    def rename_source_media(self, source_file: str, output_stem: str) -> str:
+        return rename_source_media(source_file, output_stem)
+
+    def rename_derived_artifact(self, artifact_file: str, source_stem: str, output_stem: str) -> Optional[str]:
+        return rename_derived_artifact(artifact_file, source_stem, output_stem)
+
+
 def rename_source_media(source_file: str, output_stem: str) -> str:
     source = Path(source_file)
     target = source.with_name(f"{output_stem}{source.suffix.lower()}")

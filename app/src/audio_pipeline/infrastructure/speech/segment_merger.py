@@ -9,7 +9,7 @@ pydoc conventions to support Sphinx/pydoc extraction.
 """
 
 from typing import List, Optional, Union, Any, Dict
-from ...domain.protocols import DiarizationSegment
+from ...application.ports.media_processing import DiarizationSegment
 
 
 class SegmentMerger:

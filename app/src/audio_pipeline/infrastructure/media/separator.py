@@ -21,7 +21,7 @@ from pydub import AudioSegment
 
 from ...config import PipelineConfig
 from ...domain.exceptions import VocalSeparationError
-from ...domain.protocols import VocalSeparatorProtocol
+from ...application.ports.media_processing import VocalSeparatorProtocol
 from ...utils import CheckpointManager
 
 logger = logging.getLogger(__name__)

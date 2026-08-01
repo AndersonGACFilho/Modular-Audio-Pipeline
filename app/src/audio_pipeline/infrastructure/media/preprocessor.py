@@ -25,7 +25,7 @@ import pyloudnorm as pyln
 
 from ...config import NoiseReductionConfig, PipelineConfig
 from ...domain.exceptions import AudioProcessingError
-from ...domain.protocols import PreprocessorProtocol, TimestampMapping
+from ...application.ports.media_processing import PreprocessorProtocol, TimestampMapping
 
 logger = logging.getLogger(__name__)
 

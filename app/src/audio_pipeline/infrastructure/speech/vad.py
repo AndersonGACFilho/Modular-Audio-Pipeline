@@ -18,7 +18,7 @@ from pathlib import Path
 
 from ...config import PipelineConfig, VADConfig
 from ...domain.exceptions import VADError
-from ...domain.protocols import TimestampMapping, VADProtocol
+from ...application.ports.media_processing import TimestampMapping, VADProtocol
 
 import torchaudio
 import webrtcvad
