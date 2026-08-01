@@ -224,7 +224,7 @@ Defaults: enabled = true, max_gap_s = 0.5 seconds.
 
 | Module | Description |
 |--------|-------------|
-| `media_handler.py` | File discovery, validation, FFmpeg conversion |
+| `handler.py` | File discovery, validation, FFmpeg conversion |
 | `preprocessor.py` | Noise reduction, normalization, silence removal |
 | `separator.py` | Demucs vocal separation with auto-detection |
 | `vad.py` | WebRTC Voice Activity Detection |

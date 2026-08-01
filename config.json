@@ -36,14 +36,14 @@
     "model": "large-v3",
     "device": "cuda",
     "compute_type": "float16",
-    "language": "en",
+    "language": "pt",
     "task": "transcribe",
     "temperature": 0.0,
     "beam_size": 5,
     "batch_size": 4,
     "word_timestamps": false,
     "internal_vad": false,
-    "prompt": "It is an interview for agile engine, which is an outsourcing software development company. The interview is about the candidate's experience and skills in software development, agile methodologies, and teamwork. The interviewer is pointing the benefits and compensation while look for an suitable opportuinity, and also asks about his stacks and tell him the next steps. The candidate is expected to answer the questions and provide relevant information about his background, projects, and achievements. The goal of the interview is to assess the candidate's fit for the role and the company culture."
+    "prompt": "Uma reunião daily sobre o projeto do econtrole esg, que envolve o sigor, os integrantes são Anderson, Max, Paulo, Amós, Victor e Flávio. O objetivo é discutir o andamento do projeto, identificar obstáculos e definir as próximas ações. A reunião deve ser objetiva, com foco em resultados e soluções. Todos os participantes devem contribuir com suas perspectivas e experiências para enriquecer a discussão."
   },
 
   "diarization": {

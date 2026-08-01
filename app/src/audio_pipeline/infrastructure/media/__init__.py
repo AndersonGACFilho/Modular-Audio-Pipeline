@@ -1,0 +1,2 @@
+"""Concrete media-processing adapters."""
+

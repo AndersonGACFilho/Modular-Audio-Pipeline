@@ -1,0 +1,2 @@
+"""Concrete speech-processing adapters."""
+

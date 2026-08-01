@@ -60,4 +60,13 @@ __pycache__/
 # HuggingFace Hub cache
 ~/.cache/huggingface/
 huggingface/token*
-token*
+token
+
+# Graphify
+graphify-out
+
+# Logs
+logs
+
+# Project
+context_*
