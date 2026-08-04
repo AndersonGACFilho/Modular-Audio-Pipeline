@@ -138,11 +138,14 @@ class LLMConfig:
     local_model: Optional[str] = None  # Auto-select by VRAM if None
     device: str = "auto"
     max_length: int = 2048
+    local_max_new_tokens: int = 384
+    local_attention_implementation: str = "sdpa"
     temperature: float = 0.3
     request_timeout_s: int = 900
     chunk_size_chars: int = 6_000
-    chunk_max_length: int = 512
+    chunk_max_length: int = 384
     disable_thinking: bool = True
+    speaker_labeling_enabled: bool = True
 
 @dataclass
 class DiarizationConfig:
@@ -151,6 +154,8 @@ class DiarizationConfig:
     min_speakers: int = 1
     max_speakers: int = 5
     model: str = "pyannote/speaker-diarization-3.1"
+    segmentation_batch_size: int = 32
+    embedding_batch_size: int = 32
 
 
 @dataclass
@@ -253,6 +258,10 @@ class PipelineConfig:
             errors.append("Subprocess timeout must be positive")
         if self.llm.max_length < 1:
             errors.append("LLM max length must be at least 1")
+        if self.llm.local_max_new_tokens < 1:
+            errors.append("Local LLM max new tokens must be at least 1")
+        if self.llm.local_attention_implementation not in {"sdpa", "eager"}:
+            errors.append("Local LLM attention implementation must be 'sdpa' or 'eager'")
         if self.llm.ollama_num_ctx < 4:
             errors.append("Ollama context length must be at least 4")
         if self.llm.request_timeout_s <= 0:
@@ -269,6 +278,10 @@ class PipelineConfig:
             errors.append(f"Unsupported VAD provider: {self.vad.provider}")
         if self.diarization.min_speakers < 1:
             errors.append("min_speakers must be at least 1")
+        if self.diarization.segmentation_batch_size < 1:
+            errors.append("Diarization segmentation batch size must be at least 1")
+        if self.diarization.embedding_batch_size < 1:
+            errors.append("Diarization embedding batch size must be at least 1")
 
         if errors:
             raise ConfigurationError(

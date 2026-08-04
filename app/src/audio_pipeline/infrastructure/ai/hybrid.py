@@ -24,7 +24,9 @@ import os
 import json
 import logging
 import re
+import threading
 import time
+from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +49,19 @@ class MeetingAnalysis(BaseModel):
         default_factory=dict,
         description="Profile-specific structured data extracted from the meeting",
     )
+
+
+class SpeakerNameSuggestion(BaseModel):
+    """A text-based, non-biometric suggestion for one diarized speaker."""
+
+    speaker: str
+    suggested_name: Optional[str] = None
+    confidence: float = Field(ge=0.0, le=1.0)
+    evidence: List[str] = Field(default_factory=list)
+
+
+class SpeakerNameSuggestions(BaseModel):
+    suggestions: List[SpeakerNameSuggestion] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +88,7 @@ class HybridLLMPostProcessor:
         "llama3", "llama3.1", "llama3.2",
         "mistral", "phi3", "gemma2", "qwen2",
     ]
+    LLM_HEARTBEAT_SECONDS = 30
 
     def __init__(
         self,
@@ -87,12 +103,14 @@ class HybridLLMPostProcessor:
         ollama_keep_alive: str | int = "5m",
         request_timeout_s: int = 900,
         chunk_size_chars: int = 6_000,
-        chunk_max_length: int = 512,
+        chunk_max_length: int = 384,
         disable_thinking: bool = True,
         # HuggingFace options
         local_model: Optional[str] = None,
         device: str = "auto",
         max_length: int = 2048,
+        local_max_new_tokens: int = 384,
+        local_attention_implementation: str = "sdpa",
         # Shared options
         temperature: float = 0.3,
         force_local: bool = False,
@@ -137,6 +155,8 @@ class HybridLLMPostProcessor:
         self.local_model_name = local_model
         self.device = device
         self.max_length = max_length
+        self.local_max_new_tokens = local_max_new_tokens
+        self.local_attention_implementation = local_attention_implementation
         self.temperature = temperature
         self.profile_id = profile_id
         self.profile_prompt = profile_prompt
@@ -195,7 +215,7 @@ class HybridLLMPostProcessor:
             req = urllib.request.Request(
                 f"{self.ollama_host}/api/tags", method="GET"
             )
-            with urllib.request.urlopen(req, timeout=3) as resp:
+            with urllib.request.urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read().decode())
 
             available: List[str] = [
@@ -226,8 +246,12 @@ class HybridLLMPostProcessor:
             # Fall back to whatever is installed
             return available[0]
 
-        except Exception as e:
-            logger.debug(f"Ollama probe failed: {e}")
+        except Exception as error:
+            logger.warning(
+                "Ollama unavailable at %s (%s). Falling back to the next configured LLM backend.",
+                self.ollama_host,
+                error,
+            )
             return None
 
     def _process_ollama(
@@ -295,7 +319,7 @@ class HybridLLMPostProcessor:
             self.backend = "local"
             self._init_local()
 
-    def _process_openai(self, text: str) -> Dict[str, Any]:
+    def _process_openai(self, text: str, user_prompt: Optional[str] = None) -> Dict[str, Any]:
         """Process with OpenAI API."""
         response = self.openai_client.chat.completions.create(
             model=self.openai_model,
@@ -304,7 +328,7 @@ class HybridLLMPostProcessor:
                     "role": "system",
                     "content": "You are an expert meeting analyst. Always respond with valid JSON.",
                 },
-                {"role": "user", "content": self._build_prompt(text)},
+                {"role": "user", "content": user_prompt or self._build_prompt(text)},
             ],
             temperature=self.temperature,
         )
@@ -339,6 +363,11 @@ class HybridLLMPostProcessor:
         try:
             import torch
             from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+            from transformers.utils.logging import disable_progress_bar
+
+            # Rich owns the CLI status line. Suppress Transformers' separate
+            # tqdm bar so it cannot redraw or duplicate that footer.
+            disable_progress_bar()
 
             if self.device == "auto":
                 self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -354,25 +383,35 @@ class HybridLLMPostProcessor:
             self.tokenizer = AutoTokenizer.from_pretrained(
                 self.local_model_name, trust_remote_code=True
             )
-            self.model = AutoModelForCausalLM.from_pretrained(
-                self.local_model_name,
-                torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
-                device_map=self.device,
-                trust_remote_code=True,
-                low_cpu_mem_usage=True,
-                attn_implementation="eager",
-            )
+            model_options = {
+                "torch_dtype": torch.float16 if self.device == "cuda" else torch.float32,
+                "device_map": self.device,
+                "trust_remote_code": True,
+                "low_cpu_mem_usage": True,
+                "attn_implementation": self.local_attention_implementation,
+            }
+            try:
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    self.local_model_name, **model_options
+                )
+            except ValueError as error:
+                if self.local_attention_implementation != "sdpa":
+                    raise
+                logger.warning("SDPA is unavailable for %s (%s); using eager attention.", self.local_model_name, error)
+                model_options["attn_implementation"] = "eager"
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    self.local_model_name, **model_options
+                )
             self.pipe = pipeline(
                 "text-generation",
                 model=self.model,
                 tokenizer=self.tokenizer,
-                max_new_tokens=self.max_length,
-                temperature=self.temperature,
-                do_sample=True,
-                top_p=0.9,
-                repetition_penalty=1.1,
             )
-            logger.info("✓ Local HF model loaded successfully")
+            logger.info(
+                "✓ Local HF model loaded successfully (attention=%s, max_new_tokens=%d)",
+                getattr(self.model.config, "_attn_implementation", model_options["attn_implementation"]),
+                self.local_max_new_tokens,
+            )
 
         except ImportError as e:
             raise RuntimeError(
@@ -382,16 +421,41 @@ class HybridLLMPostProcessor:
         except Exception as e:
             raise RuntimeError(f"Failed to load local HF model: {e}")
 
-    def _process_local(self, text: str) -> Dict[str, Any]:
+    def _process_local(
+        self, text: str, user_prompt: Optional[str] = None, max_new_tokens: Optional[int] = None
+    ) -> Dict[str, Any]:
         """Process with local HuggingFace model."""
         if self.pipe is None:
             logger.info("Lazy-loading local HF model now...")
             self._init_local()
 
-        prompt = self._build_prompt(text)
-        outputs = self.pipe(prompt, max_new_tokens=self.max_length)
+        prompt = user_prompt or self._build_prompt(text)
+        requested_tokens = max_new_tokens or self.local_max_new_tokens
+        input_tokens = len(self.tokenizer(prompt, add_special_tokens=False)["input_ids"])
+        try:
+            import torch
+            if self.device == "cuda":
+                torch.cuda.synchronize()
+        except Exception:
+            torch = None
+        started_at = time.perf_counter()
+        outputs = self.pipe(
+            prompt,
+            max_new_tokens=requested_tokens,
+            do_sample=False,
+            num_beams=1,
+            use_cache=True,
+        )
+        if "torch" in locals() and torch is not None and self.device == "cuda":
+            torch.cuda.synchronize()
         generated_text = outputs[0]["generated_text"]
         response = generated_text[len(prompt):].strip()
+        elapsed = time.perf_counter() - started_at
+        generated_tokens = len(self.tokenizer(response, add_special_tokens=False)["input_ids"])
+        logger.info(
+            "Local LLM generation: input_tokens=%d generated_tokens=%d elapsed=%.2fs tokens_per_second=%.2f",
+            input_tokens, generated_tokens, elapsed, generated_tokens / elapsed if elapsed else 0.0,
+        )
         return self._extract_json(response)
 
     # ------------------------------------------------------------------
@@ -479,13 +543,52 @@ class HybridLLMPostProcessor:
         if callback:
             callback(detail)
 
+    @contextmanager
+    def _llm_activity(self, operation: str):
+        """Log periodic proof of life while one LLM request is in flight."""
+        started_at = time.perf_counter()
+        backend = getattr(self, "backend", "unknown")
+        model = (
+            getattr(self, "ollama_model", None)
+            if backend == "ollama"
+            else getattr(self, "openai_model", None)
+            if backend == "openai"
+            else getattr(self, "local_model_name", None)
+        ) or "default"
+        stopped = threading.Event()
+
+        def heartbeat() -> None:
+            while not stopped.wait(self.LLM_HEARTBEAT_SECONDS):
+                elapsed = time.perf_counter() - started_at
+                logger.info(
+                    "LLM still processing %s after %.0fs (%s: %s)",
+                    operation, elapsed, backend, model,
+                )
+                self._report_progress(f"LLM {operation} ({elapsed:.0f}s)")
+
+        logger.info("LLM started %s (%s: %s)", operation, backend, model)
+        self._report_progress(f"LLM {operation}")
+        worker = threading.Thread(target=heartbeat, name="llm-heartbeat", daemon=True)
+        worker.start()
+        try:
+            yield
+        except Exception:
+            logger.warning("LLM %s failed after %.1fs", operation, time.perf_counter() - started_at)
+            raise
+        else:
+            logger.info("LLM completed %s in %.1fs", operation, time.perf_counter() - started_at)
+        finally:
+            stopped.set()
+            worker.join(timeout=1)
+
     def _process_chunk(self, text: str) -> Dict[str, Any]:
         """Analyze one bounded text chunk with the active backend."""
-        if self.backend == "ollama":
-            return self._process_ollama(text, max_length=self.chunk_max_length)
-        if self.backend == "openai":
-            return self._process_openai(text)
-        return self._process_local(text)
+        with self._llm_activity("analysis request"):
+            if self.backend == "ollama":
+                return self._process_ollama(text, max_length=self.chunk_max_length)
+            if self.backend == "openai":
+                return self._process_openai(text)
+            return self._process_local(text, max_new_tokens=self.chunk_max_length)
 
     def _classify_with_ollama(
         self, prompt: str, response_model: type[BaseModel]
@@ -497,6 +600,64 @@ class HybridLLMPostProcessor:
             user_prompt=prompt,
             response_model=response_model,
         )
+
+    def _request_structured(
+        self,
+        prompt: str,
+        response_model: type[BaseModel],
+        max_length: int,
+    ) -> Dict[str, Any]:
+        """Run a schema-constrained prompt through the selected LLM backend."""
+        with self._llm_activity("structured request"):
+            if self.backend == "ollama":
+                return self._process_ollama(
+                    "", max_length=max_length, user_prompt=prompt,
+                    response_model=response_model,
+                )
+            if self.backend == "openai":
+                return self._process_openai("", user_prompt=prompt)
+            return self._process_local("", user_prompt=prompt, max_new_tokens=max_length)
+
+    def suggest_speaker_names(self, segments: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Suggest names from explicit dialogue evidence without changing speaker IDs."""
+        excerpts: Dict[str, List[str]] = {}
+        for segment in segments:
+            speaker = str(segment.get("speaker", "Unknown"))
+            text = str(segment.get("text", "")).strip()
+            if text and speaker != "Unknown":
+                excerpts.setdefault(speaker, []).append(text)
+
+        if not excerpts:
+            return {"suggestions": []}
+
+        dialogue = "\n".join(
+            f"{speaker}: {' '.join(texts)[:2000]}"
+            for speaker, texts in sorted(excerpts.items())
+        )
+        prompt = (
+            "You label diarized speakers using only explicit evidence in this dialogue. "
+            "A name is allowed only when the speaker introduces themself or another "
+            "speaker directly addresses or identifies them. Do not infer names from role, "
+            "voice, writing style, or guesses. For unsupported labels, return null with "
+            "confidence 0 and no evidence. Evidence must quote or closely paraphrase the "
+            "supporting dialogue. Return only JSON matching the required schema.\n\n"
+            f"Dialogue:\n{dialogue}"
+        )
+        try:
+            result = SpeakerNameSuggestions(**self._request_structured(
+                prompt, SpeakerNameSuggestions, max_length=600,
+            )).model_dump()
+        except (ValidationError, ValueError) as error:
+            logger.warning("Speaker-name suggestion skipped: %s", error)
+            return {"suggestions": []}
+
+        known_speakers = set(excerpts)
+        result["suggestions"] = [
+            suggestion for suggestion in result["suggestions"]
+            if suggestion["speaker"] in known_speakers
+        ]
+        logger.info("Generated %d text-based speaker-name suggestions", len(result["suggestions"]))
+        return result
 
     def _consolidate_chunks(self, analyses: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Merge chunk analyses into one final meeting analysis."""

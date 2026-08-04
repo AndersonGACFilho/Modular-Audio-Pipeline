@@ -16,9 +16,9 @@ class ProcessAudioJob:
         self._processor = processor
         self._lease_seconds = lease_seconds
 
-    def execute(self, job_id: str) -> None:
+    async def execute(self, job_id: str) -> None:
         lease_until = datetime.now(timezone.utc) + timedelta(seconds=self._lease_seconds)
-        job = self._repository.claim(job_id, gethostname(), lease_until)
+        job = await self._repository.claim(job_id, gethostname(), lease_until)
         if job is None:
             return
 
@@ -29,10 +29,10 @@ class ProcessAudioJob:
             if not result.success or not result.output_file:
                 raise RuntimeError(result.error or "Audio pipeline completed without an output file.")
             job.mark_completed(JobResult(output_path=result.output_file, segment_count=len(result.segments), metadata=result.metadata))
-            self._repository.save(job)
+            await self._repository.save(job)
         except Exception as error:
             job.mark_failed(JobError(message=str(error), error_type=type(error).__name__))
-            self._repository.save(job)
+            await self._repository.save(job)
             raise
         finally:
             self._storage.cleanup_processing(job.job_id)

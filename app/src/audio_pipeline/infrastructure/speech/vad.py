@@ -385,7 +385,11 @@ class SileroVADFilter(VADProtocol):
                     repo_or_dir='snakers4/silero-vad',
                     model='silero_vad',
                     force_reload=False,
-                    onnx=False
+                    onnx=False,
+                    # The image preloads this known dependency during its build.
+                    # This keeps the non-interactive worker from waiting for a
+                    # terminal confirmation on first use.
+                    trust_repo=True,
                 )
             except Exception as e:
                 raise VADError(f"Failed to load Silero VAD: {e}")

@@ -1,9 +1,12 @@
 """Composition root for the concrete audio-processing pipeline."""
 
+import logging
+import os
 from typing import Callable
 
 from ..application.pipeline import AudioPipeline
 from ..config import PipelineConfig
+from ..config.gpu_profiles import apply_gpu_workload_profile
 from ..domain.models import AnalysisOptions
 from ..infrastructure.media.handler import MediaHandler
 from ..infrastructure.media.preprocessor import AudioPreprocessor
@@ -16,6 +19,8 @@ from ..infrastructure.speech.vad import NoOpVADFilter, SileroVADFilter, VADFilte
 from ..infrastructure.storage.artifacts import LocalArtifactRenamer
 from ..utils import CheckpointManager
 
+logger = logging.getLogger(__name__)
+
 
 def create_audio_pipeline(
     config: PipelineConfig,
@@ -24,6 +29,15 @@ def create_audio_pipeline(
     file_callback: Callable[[str], None] | None = None,
 ) -> AudioPipeline:
     """Build the production pipeline from a validated configuration."""
+    if profile_name := os.getenv("AUDIO_PIPELINE_GPU_PROFILE"):
+        profile = apply_gpu_workload_profile(config, profile_name)
+        logger.info(
+            "Applied GPU workload profile '%s' (transcription=%d, diarization=%d/%d)",
+            profile_name,
+            profile.transcription_batch_size,
+            profile.diarization_segmentation_batch_size,
+            profile.diarization_embedding_batch_size,
+        )
     config.validate()
     checkpoints = CheckpointManager(config.checkpoint_dir) if config.checkpoint_enabled else None
     separator = VocalSeparator.from_config(config, checkpoints) if config.vocal_separation.enabled else NoOpVocalSeparator()
@@ -47,6 +61,8 @@ def create_audio_pipeline(
             chunk_size_chars=config.llm.chunk_size_chars, chunk_max_length=config.llm.chunk_max_length,
             disable_thinking=config.llm.disable_thinking, local_model=config.llm.local_model,
             device=config.llm.device, max_length=config.llm.max_length,
+            local_max_new_tokens=config.llm.local_max_new_tokens,
+            local_attention_implementation=config.llm.local_attention_implementation,
             temperature=config.llm.temperature, lazy_load=True,
             profile_id=analysis_options.profile_id if analysis_options else None,
             profile_prompt=analysis_options.prompt if analysis_options else None,

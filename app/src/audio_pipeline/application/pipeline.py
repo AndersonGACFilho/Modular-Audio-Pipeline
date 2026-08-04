@@ -23,6 +23,7 @@ from ..config import PipelineConfig
 from ..documentation import archival_segments, documentation_text
 from ..domain.exceptions import AudioPipelineError, MediaNotFoundError
 from ..domain.naming import contextual_output_stem
+from ..infrastructure.storage.transcription_snapshot import TranscriptionSnapshotWriter
 from .ports.artifact_renamer import ArtifactRenamer
 from .ports.media_processing import (
     MediaHandlerProtocol,
@@ -143,6 +144,8 @@ class AudioPipeline(LoggerMixin):
 
         # Timestamp mappings
         self._timestamp_mappings: List[TimestampMapping] = []
+        self._snapshot_writer: Optional[TranscriptionSnapshotWriter] = None
+        self._snapshot_segments: List[Dict[str, Any]] = []
 
     def _map_timestamp_to_original(
         self,
@@ -266,6 +269,24 @@ class AudioPipeline(LoggerMixin):
 
         return aligned
 
+    @staticmethod
+    def _apply_speaker_name_suggestions(
+        segments: List[Dict[str, Any]], suggestions: Dict[str, Any]
+    ) -> None:
+        """Attach LLM suggestions while preserving the diarizer's speaker labels."""
+        by_speaker = {
+            item["speaker"]: item for item in suggestions.get("suggestions", [])
+            if item.get("suggested_name")
+        }
+        for segment in segments:
+            suggestion = by_speaker.get(segment.get("speaker"))
+            if suggestion:
+                segment["speaker_suggestion"] = {
+                    "name": suggestion["suggested_name"],
+                    "confidence": suggestion["confidence"],
+                    "evidence": suggestion["evidence"],
+                }
+
     def _report_progress(self, stage: str) -> None:
         if self.progress_callback:
             self.progress_callback(stage.replace("_", " ").capitalize())
@@ -273,6 +294,18 @@ class AudioPipeline(LoggerMixin):
     def _report_file(self, file_path: str) -> None:
         if self.file_callback:
             self.file_callback(file_path)
+
+    def _save_transcription_snapshot(
+        self,
+        writer: TranscriptionSnapshotWriter,
+        stage: str,
+        segments: List[Dict[str, Any]],
+        metrics: Dict[str, Any],
+        **kwargs: Any,
+    ) -> None:
+        """Persist the readable transcript after a completed processing stage."""
+        path = writer.write(stage, segments, metrics, **kwargs)
+        self.logger.info("Saved transcription snapshot after %s: %s", stage, path)
 
     def _measure_stage(
         self, metrics: Dict[str, Any], name: str, operation: Callable[[], Any]
@@ -286,6 +319,14 @@ class AudioPipeline(LoggerMixin):
             metrics["stage_durations_s"][name] = round(
                 time.perf_counter() - started_at, 3
             )
+            snapshot_writer = getattr(self, "_snapshot_writer", None)
+            if snapshot_writer is not None:
+                try:
+                    self._save_transcription_snapshot(
+                        snapshot_writer, name, getattr(self, "_snapshot_segments", []), metrics
+                    )
+                except OSError as error:
+                    self.logger.warning("Could not save transcription snapshot after %s: %s", name, error)
 
     @staticmethod
     def _finalize_metrics(metrics: Dict[str, Any], started_at: float) -> Dict[str, Any]:
@@ -310,6 +351,8 @@ class AudioPipeline(LoggerMixin):
         """
         started_at = time.perf_counter()
         metrics: Dict[str, Any] = {"stage_durations_s": {}, "media": {}, "segments": {}}
+        self._snapshot_writer = None
+        self._snapshot_segments = []
 
         try:
             # Step 1: Find media file
@@ -325,12 +368,16 @@ class AudioPipeline(LoggerMixin):
             base = Path(media_file).stem
             self._report_file(str(media_file))
             self.logger.info(f"Processing: {media_file}")
+            self._snapshot_writer = TranscriptionSnapshotWriter(self.results_dir, media_file)
             source_info = self.media.get_media_info(media_file)
             metrics["media"] = {
                 "input_size_bytes": os.path.getsize(media_file),
                 "source_duration_s": source_info.get("duration"),
                 "source_format": Path(media_file).suffix.lower(),
             }
+            self._save_transcription_snapshot(
+                self._snapshot_writer, "media_discovery", self._snapshot_segments, metrics
+            )
 
             # Step 2: Convert to WAV
             ext = Path(media_file).suffix.lower()
@@ -415,8 +462,12 @@ class AudioPipeline(LoggerMixin):
                 metrics, "transcription", lambda: self.transcriber.transcribe(voiced_wav)
             )
             raw_segments = transcription_result.get("segments", [])
+            self._snapshot_segments = raw_segments
             metrics["segments"]["transcribed"] = len(raw_segments)
             self.logger.info(f"✓ Transcribed {len(raw_segments)} segments")
+            self._save_transcription_snapshot(
+                self._snapshot_writer, "transcription", self._snapshot_segments, metrics
+            )
 
             # Step 6: Diarize
             if self.config.diarization.enabled:
@@ -440,7 +491,11 @@ class AudioPipeline(LoggerMixin):
                     raw_segments, diarization_segments
                 )
             )
+            self._snapshot_segments = aligned_segments
             metrics["segments"]["aligned"] = len(aligned_segments)
+            self._save_transcription_snapshot(
+                self._snapshot_writer, "speaker_alignment", self._snapshot_segments, metrics
+            )
 
             # Step 8: Map timestamps
             self._report_progress("timestamp mapping")
@@ -464,10 +519,14 @@ class AudioPipeline(LoggerMixin):
                 metrics["timestamp_mappings"] = len(all_mappings)
             else:
                 metrics["stage_durations_s"]["timestamp_mapping"] = 0.0
+            self._save_transcription_snapshot(
+                self._snapshot_writer, "timestamp_mapping", self._snapshot_segments, metrics
+            )
 
             # This archival representation is the canonical transcript. It is
             # never passed through an LLM or a lossy redundancy filter.
             archived_segments = archival_segments(aligned_segments)
+            self._snapshot_segments = archived_segments
             metrics["segments"]["archival"] = len(archived_segments)
 
             # Step 9: Remove redundancies
@@ -477,6 +536,10 @@ class AudioPipeline(LoggerMixin):
             )
             metrics["segments"]["after_redundancy_removal"] = len(final_segments)
             self.logger.info(f"✓ Final: {len(final_segments)} segments")
+            self._snapshot_segments = final_segments
+            self._save_transcription_snapshot(
+                self._snapshot_writer, "redundancy_removal", self._snapshot_segments, metrics
+            )
 
             # Step 10: Merge short segments if needed
             if self.config.segment_merging.enabled:
@@ -488,12 +551,17 @@ class AudioPipeline(LoggerMixin):
                 self._report_progress("segment merging")
                 metrics["stage_durations_s"]["segment_merging"] = 0.0
             metrics["segments"]["final"] = len(final_segments)
+            self._snapshot_segments = final_segments
+            self._save_transcription_snapshot(
+                self._snapshot_writer, "segment_merging", self._snapshot_segments, metrics
+            )
 
             # Step 11: LLM Post-Processing
             # Unload transcription and diarization models first to free VRAM
             # before loading the LLM (critical on GPUs with ≤ 8 GB VRAM).
             self._report_progress("llm analysis")
             llm_analysis = None
+            speaker_suggestions = None
             llm_started_at = time.perf_counter()
             if self.config.llm.enabled:
                 if self.llm_processor and hasattr(self.llm_processor, "unload_model"):
@@ -522,6 +590,15 @@ class AudioPipeline(LoggerMixin):
 
             if self.llm_processor:
                 try:
+                    if self.config.llm.speaker_labeling_enabled:
+                        self.logger.info("Suggesting speaker names from dialogue evidence...")
+                        speaker_suggestions = self.llm_processor.suggest_speaker_names(
+                            archived_segments
+                        )
+                        self._apply_speaker_name_suggestions(
+                            archived_segments, speaker_suggestions
+                        )
+
                     self.logger.info("Analyzing with LLM...")
                     full_text = " ".join([s["text"] for s in archived_segments])
                     llm_analysis = self.llm_processor.process(
@@ -554,6 +631,15 @@ class AudioPipeline(LoggerMixin):
                     else "failed" if llm_analysis else "skipped"
                 ),
             }
+            self._snapshot_segments = archived_segments
+            self._save_transcription_snapshot(
+                self._snapshot_writer,
+                "llm_post_processing",
+                self._snapshot_segments,
+                metrics,
+                llm_analysis=llm_analysis,
+                speaker_suggestions=speaker_suggestions,
+            )
             self._finalize_metrics(metrics, started_at)
 
             formatting = (
@@ -611,6 +697,9 @@ class AudioPipeline(LoggerMixin):
                 },
             }
 
+            if self.llm_processor and self.config.llm.speaker_labeling_enabled:
+                output_data["speaker_suggestions"] = speaker_suggestions
+
             if llm_analysis and "error" not in llm_analysis:
                 output_data["llm_analysis"] = llm_analysis
 
@@ -630,6 +719,17 @@ class AudioPipeline(LoggerMixin):
             self._finalize_metrics(metrics, started_at)
             with open(out_path, "w", encoding="utf-8") as file:
                 json.dump(output_data, file, ensure_ascii=False, indent=2)
+
+            self._save_transcription_snapshot(
+                self._snapshot_writer,
+                "saving_results",
+                archived_segments,
+                metrics,
+                llm_analysis=llm_analysis,
+                speaker_suggestions=speaker_suggestions,
+                completed=True,
+                final_output=out_path,
+            )
 
             self.logger.info(f"✓ Saved transcription: {out_path}")
 

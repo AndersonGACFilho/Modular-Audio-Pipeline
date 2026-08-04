@@ -1,0 +1,17 @@
+.git
+.venv
+__pycache__
+*.py[cod]
+files
+data
+logs
+graphify-out
+.env
+*** Add File: D:\VideoTranscripter\.env.example
+MONGO_ROOT_PASSWORD=change-this-root-password
+MONGO_APP_USERNAME=audio_pipeline
+MONGO_APP_PASSWORD=change-this-application-password
+RABBITMQ_USER=audio_pipeline
+RABBITMQ_PASSWORD=change-this-rabbitmq-password
+HF_TOKEN=
+AUDIO_PIPELINE_JOB_LEASE_SECONDS=3600

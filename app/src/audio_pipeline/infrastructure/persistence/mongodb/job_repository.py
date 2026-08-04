@@ -12,36 +12,42 @@ from ....domain.models import AudioJob, AudioJobOptions, JobError, JobResult, Jo
 class MongoDBJobRepository:
     def __init__(self, uri: str, database: str, collection: str) -> None:
         try:
-            from pymongo import MongoClient, ReturnDocument
+            from pymongo import AsyncMongoClient, ReturnDocument
         except ImportError as error:
             raise RuntimeError("MongoDB support requires 'pymongo'. Run 'uv sync'.") from error
 
         self._return_document = ReturnDocument
-        self._collection = MongoClient(uri)[database][collection]
-        self._collection.create_index([("status", 1), ("updated_at", 1)])
-        self._collection.create_index("created_at")
+        self._client = AsyncMongoClient(uri)
+        self._collection = self._client[database][collection]
 
-    def create(self, job: AudioJob) -> None:
-        self._collection.insert_one(self._to_document(job))
+    async def ensure_indexes(self) -> None:
+        await self._collection.create_index([("status", 1), ("updated_at", 1)])
+        await self._collection.create_index("created_at")
 
-    def get(self, job_id: str) -> AudioJob | None:
-        document = self._collection.find_one({"_id": job_id})
+    async def close(self) -> None:
+        await self._client.close()
+
+    async def create(self, job: AudioJob) -> None:
+        await self._collection.insert_one(self._to_document(job))
+
+    async def get(self, job_id: str) -> AudioJob | None:
+        document = await self._collection.find_one({"_id": job_id})
         return self._from_document(document) if document else None
 
-    def claim(self, job_id: str, worker_id: str, lease_until: datetime) -> AudioJob | None:
+    async def claim(self, job_id: str, worker_id: str, lease_until: datetime) -> AudioJob | None:
         now = datetime.now(timezone.utc)
-        document = self._collection.find_one_and_update(
+        document = await self._collection.find_one_and_update(
             {"_id": job_id, "status": JobStatus.QUEUED.value},
             {"$set": {"status": JobStatus.PROCESSING.value, "worker_id": worker_id, "started_at": now, "updated_at": now, "lease_until": lease_until}, "$inc": {"attempt_count": 1}},
             return_document=self._return_document.AFTER,
         )
         return self._from_document(document) if document else None
 
-    def save(self, job: AudioJob) -> None:
+    async def save(self, job: AudioJob) -> None:
         """Persist an aggregate that already performed its own transition."""
         document = self._to_document(job)
         job_id = document.pop("_id")
-        result = self._collection.update_one(
+        result = await self._collection.update_one(
             {"_id": job_id, "status": JobStatus.PROCESSING.value},
             {"$set": document, "$unset": {"lease_until": "", "worker_id": ""}},
         )

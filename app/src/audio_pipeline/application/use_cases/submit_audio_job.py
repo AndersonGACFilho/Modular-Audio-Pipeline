@@ -16,7 +16,7 @@ class SubmitAudioJob:
         self._repository = repository
         self._queue = queue
 
-    def execute(self, source_path: str | Path, options: AudioJobOptions | dict | None = None) -> AudioJob:
+    async def execute(self, source_path: str | Path, options: AudioJobOptions | dict | None = None) -> AudioJob:
         source = Path(source_path)
         if not source.is_file():
             raise FileNotFoundError(f"Uploaded media file does not exist: {source}")
@@ -32,6 +32,6 @@ class SubmitAudioJob:
             options=options if isinstance(options, AudioJobOptions) else AudioJobOptions.from_dict(options),
             created_at=datetime.now().astimezone(),
         )
-        self._repository.create(job)
-        self._queue.publish(job.job_id)
+        await self._repository.create(job)
+        await self._queue.publish(job.job_id)
         return job

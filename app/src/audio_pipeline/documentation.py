@@ -29,6 +29,12 @@ def documentation_text(segments: Iterable[Dict[str, Any]]) -> str:
     for segment in segments:
         start = format_timestamp(float(segment.get("original_start", segment.get("start", 0))))
         speaker = segment.get("speaker", "Unknown")
+        suggestion = segment.get("speaker_suggestion")
+        if suggestion:
+            speaker = (
+                f"{speaker} (possivelmente {suggestion['name']}, "
+                f"{suggestion['confidence']:.0%})"
+            )
         text = segment.get("text", "")
         if text:
             lines.append(f"[{start}] {speaker}: {text}")

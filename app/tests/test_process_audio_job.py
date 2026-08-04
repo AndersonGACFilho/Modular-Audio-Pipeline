@@ -11,11 +11,11 @@ class InMemoryRepository:
         self.job = job
         self.saved = None
 
-    def claim(self, *_args):
+    async def claim(self, *_args):
         self.job.mark_processing()
         return self.job
 
-    def save(self, job):
+    async def save(self, job):
         self.saved = job
 
 
@@ -39,6 +39,10 @@ class SuccessfulProcessor:
         return PipelineResult(True, job.source.path, "result.json", [{"text": "done"}], metadata={"backend": "test"})
 
 
+async def _execute_job(use_case, job_id):
+    await use_case.execute(job_id)
+
+
 def test_process_audio_job_transitions_the_aggregate_before_persisting(tmp_path):
     job = AudioJob(
         job_id="job-1",
@@ -48,7 +52,9 @@ def test_process_audio_job_transitions_the_aggregate_before_persisting(tmp_path)
     repository = InMemoryRepository(job)
     workspace = Workspace(tmp_path)
 
-    ProcessAudioJob(repository, workspace, SuccessfulProcessor(), lease_seconds=60).execute(job.job_id)
+    import asyncio
+
+    asyncio.run(_execute_job(ProcessAudioJob(repository, workspace, SuccessfulProcessor(), lease_seconds=60), job.job_id))
 
     assert repository.saved is job
     assert job.status.value == "completed"

@@ -38,11 +38,12 @@ class TerminalProgress:
     def set_total_files(self, total_files: int) -> None:
         self._total_files = max(total_files, 1)
 
-    def set_file(self, path: str, index: int = 1) -> None:
-        if index != self._file_index:
+    def set_file(self, path: str, index: int | None = None) -> None:
+        if index is not None and index != self._file_index:
             self._stage = "Starting"
             self._stage_number = 0
-        self._file_index = index
+        if index is not None:
+            self._file_index = index
         self._file_name = Path(path).name
         self._refresh()
 
@@ -60,8 +61,9 @@ class TerminalProgress:
             self._progress.stop()
 
     def _description(self) -> str:
+        remaining_files = max(self._total_files - self._file_index, 0)
         return (
-            f"Arquivo {self._file_index}/{self._total_files}: {self._file_name} - "
+            f"Arquivo {self._file_index}/{self._total_files} (restam {remaining_files}): {self._file_name} - "
             f"{self._stage} ({self._stage_number}/{len(self._STAGES)})"
         )
 

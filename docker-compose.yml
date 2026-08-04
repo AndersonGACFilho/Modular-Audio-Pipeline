@@ -1,0 +1,79 @@
+services:
+  mongo:
+    image: mongo:8
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?set MONGO_ROOT_PASSWORD}
+      MONGO_INITDB_DATABASE: audio_pipeline
+      MONGO_APP_USERNAME: ${MONGO_APP_USERNAME:-audio_pipeline}
+      MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD:?set MONGO_APP_PASSWORD}
+    volumes:
+      - mongo_data:/data/db
+      - ./docker/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet -u root -p $$MONGO_INITDB_ROOT_PASSWORD --authenticationDatabase admin --eval 'db.adminCommand({ ping: 1 }).ok' | grep 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:4-management
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-audio_pipeline}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD}
+    ports:
+      - "${RABBITMQ_MANAGEMENT_PORT:-15673}:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  audio-pipeline:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      AUDIO_PIPELINE_MODE: ${AUDIO_PIPELINE_MODE:-rabbit}
+      AUDIO_PIPELINE_CLI_CONFIG: /app/config.json
+      AUDIO_PIPELINE_CLI_MEDIA_DIR: /data/incoming
+      AUDIO_PIPELINE_DATA_ROOT: /data
+      AUDIO_PIPELINE_GPU_PROFILE: ${AUDIO_PIPELINE_GPU_PROFILE:-balanced}
+      AUDIO_PIPELINE_OLLAMA_HOST: ${AUDIO_PIPELINE_OLLAMA_HOST:-http://host.docker.internal:11434}
+      AUDIO_PIPELINE_MONGODB_URI: mongodb://${MONGO_APP_USERNAME:-audio_pipeline}:${MONGO_APP_PASSWORD}@mongo:27017/audio_pipeline?authSource=audio_pipeline
+      AUDIO_PIPELINE_RABBITMQ_URL: amqp://${RABBITMQ_USER:-audio_pipeline}:${RABBITMQ_PASSWORD}@rabbitmq:5672/%2F
+      AUDIO_PIPELINE_JOB_LEASE_SECONDS: ${AUDIO_PIPELINE_JOB_LEASE_SECONDS:-3600}
+      HF_TOKEN: ${HF_TOKEN:-}
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    volumes:
+      - ./files:/data
+      - ./logs:/app/logs
+      - ./logs:/data/logs
+    depends_on:
+      mongo:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  mongo_data:
+  rabbitmq_data:

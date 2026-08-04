@@ -1,7 +1,7 @@
 {
   "_scope": "CLI_ONLY",
   "_description": "Workers receive operational settings from the environment and semantic settings from the persisted AudioJob.",
-  "media_dir": "./files",
+  "media_dir": "./files/incoming",
   "preserve_timestamps": true,
   "subprocess_timeout_s": 600,
   "lazy_load_models": true,
@@ -87,11 +87,14 @@
 
     "device": "auto",
     "max_length": 512,
+    "local_max_new_tokens": 384,
+    "local_attention_implementation": "sdpa",
     "temperature": 0.3,
-    "request_timeout_s": 120,
-    "chunk_size_chars": 12000,
-    "chunk_max_length": 256,
+    "request_timeout_s": 900,
+    "chunk_size_chars": 9000,
+    "chunk_max_length": 384,
     "disable_thinking": true,
+    "speaker_labeling_enabled": true,
 
     "_notes": [
       "If OPENAI_API_KEY is set and use_openai=true, uses OpenAI API",

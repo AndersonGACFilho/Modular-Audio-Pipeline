@@ -9,6 +9,8 @@ DiarizerProtocol. Docstrings use pydoc style to support Sphinx/pydoc.
 
 import os
 import logging
+import threading
+import time
 from typing import List, Optional
 
 import torch
@@ -21,6 +23,30 @@ from ...utils import retry_with_backoff
 logger = logging.getLogger(__name__)
 
 __all__ = ["SpeakerDiarizer", "NoOpDiarizer"]
+
+
+class _DiarizationProgressHook:
+    """Translate pyannote pipeline updates into application logs."""
+
+    def __init__(self) -> None:
+        self.status = "starting"
+
+    def __call__(
+        self,
+        step_name: str,
+        _step_artifact: object,
+        file: object | None = None,
+        total: int | None = None,
+        completed: int | None = None,
+    ) -> None:
+        del file
+        if completed is None:
+            completed = total = 1
+        elif total is None:
+            total = completed
+
+        self.status = f"{step_name} ({completed}/{total})"
+        logger.info("Diarization progress: %s", self.status)
 
 
 class SpeakerDiarizer(DiarizerProtocol):
@@ -38,7 +64,9 @@ class SpeakerDiarizer(DiarizerProtocol):
         model: str = "pyannote/speaker-diarization-3.1",
         hf_token: Optional[str] = None,
         device: Optional[str] = None,
-        lazy_load: bool = True
+        lazy_load: bool = True,
+        segmentation_batch_size: int = 32,
+        embedding_batch_size: int = 32,
     ):
         """
         Initialize SpeakerDiarizer.
@@ -60,6 +88,8 @@ class SpeakerDiarizer(DiarizerProtocol):
         
         self._pipeline = None
         self._lazy_load = lazy_load
+        self.segmentation_batch_size = segmentation_batch_size
+        self.embedding_batch_size = embedding_batch_size
         # If loading fails due to incompatible runtime (e.g., NumPy 2.0), fall back to NoOp
         self._use_noop = False
 
@@ -73,7 +103,9 @@ class SpeakerDiarizer(DiarizerProtocol):
         """Create diarizer from pipeline configuration."""
         return cls(
             model=config.diarization.model,
-            lazy_load=config.lazy_load_models
+            lazy_load=config.lazy_load_models,
+            segmentation_batch_size=config.diarization.segmentation_batch_size,
+            embedding_batch_size=config.diarization.embedding_batch_size,
         )
     
     def is_loaded(self) -> bool:
@@ -107,10 +139,10 @@ class SpeakerDiarizer(DiarizerProtocol):
             ).to(self.device)
 
             if hasattr(self._pipeline, "segmentation_batch_size"):
-                self._pipeline.segmentation_batch_size = 32
+                self._pipeline.segmentation_batch_size = self.segmentation_batch_size
 
             if hasattr(self._pipeline, "embedding_batch_size"):
-                self._pipeline.embedding_batch_size = 32
+                self._pipeline.embedding_batch_size = self.embedding_batch_size
             
             logger.info(f"Diarization pipeline loaded on {self.device}")
             
@@ -196,11 +228,34 @@ class SpeakerDiarizer(DiarizerProtocol):
         logger.info(f"Diarizing: {audio_path} (speakers: {min_speakers}-{max_speakers})")
         
         try:
-            diar_result = self._pipeline(
-                audio_path,
-                min_speakers=min_speakers,
-                max_speakers=max_speakers
+            progress_hook = _DiarizationProgressHook()
+            started_at = time.monotonic()
+            stopped = threading.Event()
+
+            def log_heartbeat() -> None:
+                while not stopped.wait(30):
+                    logger.info(
+                        "Diarization still running after %.0fs: %s",
+                        time.monotonic() - started_at,
+                        progress_hook.status,
+                    )
+
+            heartbeat = threading.Thread(
+                target=log_heartbeat,
+                name="diarization-heartbeat",
+                daemon=True,
             )
+            heartbeat.start()
+            try:
+                diar_result = self._pipeline(
+                    audio_path,
+                    min_speakers=min_speakers,
+                    max_speakers=max_speakers,
+                    hook=progress_hook,
+                )
+            finally:
+                stopped.set()
+                heartbeat.join(timeout=1)
             
             # Convert to our segment format
             # pyannote.audio returns different objects depending on version

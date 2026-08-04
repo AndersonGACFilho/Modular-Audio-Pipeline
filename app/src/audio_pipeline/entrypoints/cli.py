@@ -13,7 +13,7 @@ from typing import Optional
 
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
 SOURCE_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_MEDIA_DIRECTORY = PROJECT_ROOT / "files"
+DEFAULT_MEDIA_DIRECTORY = PROJECT_ROOT / "files" / "incoming"
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(SOURCE_ROOT))
@@ -28,6 +28,7 @@ from audio_pipeline.config import (
 )
 from audio_pipeline.application.pipeline import AudioPipeline
 from audio_pipeline.bootstrap import create_audio_pipeline
+from audio_pipeline.bootstrap.runtime_preflight import RuntimePreflight
 from audio_pipeline.domain.exceptions import AudioPipelineError, ConfigurationError
 from shared.observability import TerminalProgress, configure_logging
 
@@ -238,6 +239,8 @@ def build_config(args: argparse.Namespace) -> PipelineConfig:
         logger.info(f"Loaded configuration from: {args.config}")
     else:
         config = PipelineConfig(media_dir=str(DEFAULT_MEDIA_DIRECTORY))
+
+    apply_container_ollama_host_override(config)
     
     # Override with command line arguments
     if args.media_dir:
@@ -282,6 +285,18 @@ def build_config(args: argparse.Namespace) -> PipelineConfig:
     return config
 
 
+def apply_container_ollama_host_override(
+    config: PipelineConfig, *, is_container: Optional[bool] = None
+) -> None:
+    """Apply the Compose-only host bridge without breaking the local CLI."""
+    if is_container is None:
+        is_container = Path("/.dockerenv").exists()
+    ollama_host = os.getenv("AUDIO_PIPELINE_OLLAMA_HOST")
+    if is_container and ollama_host:
+        config.llm.ollama_host = ollama_host
+        logger.info("Using Docker Ollama host: %s", ollama_host)
+
+
 def main() -> int:
     """
     Main entry point.
@@ -310,6 +325,7 @@ def main() -> int:
         logger.info(f"Media directory: {config.media_dir}")
         logger.info(f"Model: {config.transcription.model}")
         logger.info(f"Language: {config.transcription.language}")
+        RuntimePreflight().run(config)
         
         # Build the pipeline once, then process the local media queue in order.
         pipeline = create_audio_pipeline(

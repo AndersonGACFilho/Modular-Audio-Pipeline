@@ -93,7 +93,7 @@ class ProfileRouter:
         """Return a high-confidence route when recruitment language is explicit.
 
         Folder names are often organizational labels (for example, ``Mentorias``),
-        rather than the actual type of a particular recording.  A combination of
+        rather than the actual type of particular recording.  A combination of
         recruitment signals in the spoken content is therefore stronger evidence.
         """
         normalized = (text or "").casefold()

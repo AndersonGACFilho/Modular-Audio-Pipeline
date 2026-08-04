@@ -1,10 +1,14 @@
+import logging
+import urllib.error
+import urllib.request
+
 from audio_pipeline.config import PipelineConfig
 from audio_pipeline.application.pipeline import AudioPipeline
 from audio_pipeline.config.profiles import ProfileRouter, ProfileRouting
 from audio_pipeline.domain.naming import contextual_output_stem
 from audio_pipeline.infrastructure.storage.artifacts import rename_derived_artifact, rename_source_media
 from audio_pipeline.documentation import archival_segments, documentation_text
-from audio_pipeline.infrastructure.ai.hybrid import HybridLLMPostProcessor
+from audio_pipeline.infrastructure.ai.hybrid import HybridLLMPostProcessor, SpeakerNameSuggestions
 from audio_pipeline.infrastructure.speech.transcriber import FasterWhisperTranscriber
 
 
@@ -45,6 +49,79 @@ def test_long_llm_analysis_is_chunked_and_consolidated():
 
     assert result["summary"] == "combined"
     assert result["formatting"]["profile"] == "generic_meeting"
+
+
+def test_speaker_name_suggestions_keep_only_known_diarization_labels():
+    processor = object.__new__(HybridLLMPostProcessor)
+    processor.backend = "ollama"
+    processor._request_structured = lambda _prompt, _schema, max_length: {
+        "suggestions": [
+            {"speaker": "SPEAKER_00", "suggested_name": "Ana", "confidence": 0.9, "evidence": ["Eu sou a Ana."]},
+            {"speaker": "SPEAKER_99", "suggested_name": "Bia", "confidence": 0.9, "evidence": ["irrelevant"]},
+        ]
+    }
+
+    result = processor.suggest_speaker_names([
+        {"speaker": "SPEAKER_00", "text": "Eu sou a Ana."},
+        {"speaker": "SPEAKER_01", "text": "Prazer."},
+    ])
+
+    assert result == {"suggestions": [
+        {"speaker": "SPEAKER_00", "suggested_name": "Ana", "confidence": 0.9, "evidence": ["Eu sou a Ana."]}
+    ]}
+
+
+def test_llm_activity_logs_start_and_completion(caplog):
+    processor = object.__new__(HybridLLMPostProcessor)
+    processor.backend = "ollama"
+    processor.ollama_model = "qwen3.5:9b"
+
+    with caplog.at_level(logging.INFO):
+        with processor._llm_activity("analysis request"):
+            pass
+
+    assert "LLM started analysis request (ollama: qwen3.5:9b)" in caplog.text
+    assert "LLM completed analysis request" in caplog.text
+
+
+def test_local_fallback_uses_greedy_generation_and_cache():
+    calls = []
+
+    class Tokenizer:
+        def __call__(self, value, **_kwargs):
+            return {"input_ids": list(value)}
+
+    processor = object.__new__(HybridLLMPostProcessor)
+    processor.pipe = lambda prompt, **kwargs: calls.append((prompt, kwargs)) or [{"generated_text": prompt + "{}"}]
+    processor.tokenizer = Tokenizer()
+    processor.device = "cpu"
+    processor.local_max_new_tokens = 192
+    processor._extract_json = lambda value: {"response": value}
+
+    result = processor._process_local("", user_prompt="source", max_new_tokens=64)
+
+    assert result == {"response": "{}"}
+    assert calls == [("source", {
+        "max_new_tokens": 64,
+        "do_sample": False,
+        "num_beams": 1,
+        "use_cache": True,
+    })]
+
+
+def test_ollama_probe_logs_why_a_fallback_is_used(monkeypatch, caplog):
+    processor = object.__new__(HybridLLMPostProcessor)
+    processor.ollama_host = "http://localhost:11434"
+
+    def unavailable(*_args, **_kwargs):
+        raise urllib.error.URLError("connection refused")
+
+    monkeypatch.setattr(urllib.request, "urlopen", unavailable)
+    with caplog.at_level(logging.WARNING):
+        assert processor._detect_ollama() is None
+
+    assert "Ollama unavailable at http://localhost:11434" in caplog.text
+    assert "connection refused" in caplog.text
 
 
 def test_profile_fallback_uses_generic_profile_names_not_companies():
